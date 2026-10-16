@@ -22,6 +22,8 @@ export const CONFIG = {
   stationIndexUrl: "station_index.parquet",
   // Gazetteer (GeoNames cities1000), loaded the first time a question names a place.
   placesUrl: "places.parquet",
+  // US state and county outlines for maps (us-atlas 3.0.1, Census 1:10m), loaded on first map.
+  atlasUrl: "geo/us-counties-10m.json",
 
   // Guard rails for the browser. by_year files cannot be filtered by station
   // before download, so a station with no by_station history (or a request

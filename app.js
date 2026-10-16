@@ -260,7 +260,7 @@ function onStep(s) {
     }
     const call = s.name === "run_sql" ? s.args?.query
       : s.name === "make_chart"
-        ? `${s.args?.sql ?? ""}\n\n${JSON.stringify(s.args?.vega_lite ?? s.args?.spec ?? null, null, 2)}`
+        ? `${s.args?.sql ?? ""}\n\n${JSON.stringify({ vega_lite: s.args?.vega_lite ?? s.args?.spec, basemap: s.args?.basemap }, null, 2)}`
       : JSON.stringify(s.args, null, 2);
     const result = JSON.stringify(s.result, null, 2);
     details.append(
@@ -388,30 +388,161 @@ function normalizeSpec(raw) {
   return spec;
 }
 
+// ---------------------------------------------------------------------------
+// Maps: US state and county outlines (us-atlas TopoJSON, Census 1:10m) drawn
+// under the model's station layer, optionally colored by a query column.
+
+const STATE_FIPS = {
+  AL: "01", AK: "02", AZ: "04", AR: "05", CA: "06", CO: "08", CT: "09", DE: "10", DC: "11", FL: "12",
+  GA: "13", HI: "15", ID: "16", IL: "17", IN: "18", IA: "19", KS: "20", KY: "21", LA: "22", ME: "23",
+  MD: "24", MA: "25", MI: "26", MN: "27", MS: "28", MO: "29", MT: "30", NE: "31", NV: "32", NH: "33",
+  NJ: "34", NM: "35", NY: "36", NC: "37", ND: "38", OH: "39", OK: "40", OR: "41", PA: "42", RI: "44",
+  SC: "45", SD: "46", TN: "47", TX: "48", UT: "49", VT: "50", VA: "51", WA: "53", WV: "54", WI: "55",
+  WY: "56", PR: "72",
+};
+
+const MAP_POINTS_EXAMPLE =
+  '{"mark": "circle", "encoding": {"longitude": {"field": "lon", "type": "quantitative"}, ' +
+  '"latitude": {"field": "lat", "type": "quantitative"}, "color": {"field": "tmax_f", "type": "quantitative"}}}';
+
+let atlasPromise = null;
+function loadAtlas() {
+  atlasPromise ||= fetch(new URL(CONFIG.atlasUrl, location.href)).then((r) => {
+    if (!r.ok) throw new Error(`Map outlines not found (${r.status}).`);
+    return r.json();
+  });
+  atlasPromise.catch(() => (atlasPromise = null));
+  return atlasPromise;
+}
+
+async function buildMap(spec, rows, basemap) {
+  const level = String(basemap.level || "states").toLowerCase().startsWith("count") ? "counties" : "states";
+  const st = basemap.state ? String(basemap.state).trim().toUpperCase() : null;
+  if (st && !STATE_FIPS[st]) throw new Error(`Maps cover US states, DC and PR; "${basemap.state}" is not one of them.`);
+  const topo = await loadAtlas();
+  const css = getComputedStyle(document.documentElement);
+  const outline = (filterExtra) => {
+    const layer = {
+      data: { values: topo, format: { type: "topojson", feature: level } },
+      mark: { type: "geoshape", fill: css.getPropertyValue("--code-bg").trim(), stroke: "#8e9090", strokeWidth: level === "counties" ? 0.35 : 0.8 },
+      transform: [],
+    };
+    if (st) {
+      layer.transform.push({
+        filter: level === "states" ? `datum.id == '${STATE_FIPS[st]}'` : `substring(datum.id, 0, 2) == '${STATE_FIPS[st]}'`,
+      });
+    }
+    if (filterExtra) layer.transform.push(...filterExtra);
+    return layer;
+  };
+  const layers = [outline()];
+
+  // Choropleth: join query rows to shapes by county_fips (counties) or state (states).
+  const color = basemap.color_by;
+  if (color?.field) {
+    if (!(color.field in rows[0])) throw new Error(`color_by.field "${color.field}" is not one of the query's columns (${Object.keys(rows[0]).join(", ")}).`);
+    const keyed = rows
+      .map((r) => ({
+        ...r,
+        _geo_id: level === "counties"
+          ? (r.county_fips != null ? String(r.county_fips).padStart(5, "0") : null)
+          : STATE_FIPS[String(r.state ?? "").toUpperCase()] ?? null,
+      }))
+      .filter((r) => r._geo_id);
+    if (!keyed.length) {
+      throw new Error(level === "counties"
+        ? "To color counties, the query must return county_fips (from stations) and the value column, one row per county."
+        : "To color states, the query must return state (postal code, from stations) and the value column, one row per state.");
+    }
+    const fill = outline([{ lookup: "id", from: { data: { values: keyed }, key: "_geo_id", fields: [color.field] } },
+      { filter: `isValid(datum['${color.field}'])` }]);
+    delete fill.mark.fill;
+    fill.encoding = {
+      color: { field: color.field, type: "quantitative", title: color.title ?? color.field, scale: { scheme: color.scheme ?? "blues" } },
+      tooltip: [{ field: "properties.name", title: level === "counties" ? "County" : "State" }, { field: color.field, type: "quantitative" }],
+    };
+    layers.push(fill);
+  }
+
+  // The model's layers (station points), which must place marks by longitude/latitude.
+  if (spec) {
+    const own = spec.layer
+      ? spec.layer.map((l) => ({ ...l, encoding: { ...(spec.encoding || {}), ...(l.encoding || {}) }, transform: l.transform ?? spec.transform }))
+      : [{ mark: spec.mark, encoding: spec.encoding, transform: spec.transform, params: spec.params }];
+    for (const l of own) {
+      const enc = l.encoding || {};
+      // Models often put lon/lat on x/y; move them to the geographic channels.
+      if (!enc.longitude && /lon/i.test(enc.x?.field || "")) { enc.longitude = enc.x; delete enc.x; }
+      if (!enc.latitude && /lat/i.test(enc.y?.field || "")) { enc.latitude = enc.y; delete enc.y; }
+      if (!enc.longitude || !enc.latitude) {
+        throw new Error(`On a map, every layer needs longitude and latitude encodings. Example: ${MAP_POINTS_EXAMPLE}`);
+      }
+      for (const ch of ["longitude", "latitude"]) enc[ch] = { type: "quantitative", ...enc[ch] };
+      // Readable defaults on a gray basemap: larger dots with a white edge, and
+      // a full-range color scale rather than pale blues.
+      const markType = typeof l.mark === "string" ? l.mark : l.mark?.type;
+      if (["circle", "point", "square"].includes(markType)) {
+        l.mark = { size: 70, stroke: "#ffffff", strokeWidth: 0.7, opacity: 1, ...(typeof l.mark === "object" ? l.mark : {}), type: markType };
+      }
+      if (enc.color && enc.color.type !== "nominal" && !enc.color.scale?.scheme) {
+        enc.color = { ...enc.color, scale: { ...(enc.color.scale || {}), scheme: "viridis" } };
+      }
+      l.encoding = enc;
+      for (const k of Object.keys(l)) if (l[k] === undefined) delete l[k];
+      layers.push(l);
+    }
+  }
+
+  return {
+    title: spec?.title,
+    width: "container",
+    height: st ? 480 : 400,
+    projection: spec?.projection ?? { type: st ? "mercator" : "albersUsa" },
+    data: { values: rows },
+    layer: layers,
+    resolve: { scale: { color: "independent" }, legend: { color: "independent" } },
+  };
+}
+
 async function makeChart(args) {
   const { sql, title } = args;
   // Accept the spellings models tend to use for the spec.
-  const raw = args.vega_lite ?? args.vegaLite ?? args.spec ?? args.vega_lite_spec ?? args.chart;
+  let raw = args.vega_lite ?? args.vegaLite ?? args.spec ?? args.vega_lite_spec ?? args.chart;
+  const basemap = args.basemap && typeof args.basemap === "object" ? args.basemap
+    : typeof args.basemap === "string" ? { level: args.basemap } : null;
   const g = await ghcndPromise;
   const { rows, truncated } = await g.select(sql, CONFIG.maxChartRows);
   if (!rows.length) return { error: "The chart query returned no rows." };
-  let spec;
+  let spec = null;
   try {
-    spec = normalizeSpec(raw);
+    if (basemap && typeof raw === "string") raw = JSON.parse(raw);
+    const emptySpec = !raw || (typeof raw === "object" && !Object.keys(raw).length);
+    if (basemap && raw && typeof raw === "object" && !raw.mark && !raw.layer && raw.encoding) raw.mark = "circle";
+    if (!(basemap && emptySpec)) spec = normalizeSpec(raw);
   } catch (err) {
     return { error: err.message };
   }
+  if (!spec && !basemap?.color_by) {
+    return { error: `Give a station layer or basemap.color_by. Station layer example: ${MAP_POINTS_EXAMPLE}` };
+  }
   const columns = Object.keys(rows[0]);
   const fields = [];
-  JSON.stringify(spec, (k, v) => {
+  JSON.stringify(spec ?? {}, (k, v) => {
     if (k === "field" && typeof v === "string") fields.push(v);
     return v;
   });
   // Transforms can create fields, so only check specs without them.
-  const hasTransform = JSON.stringify(spec).includes('"transform"');
+  const hasTransform = JSON.stringify(spec ?? {}).includes('"transform"');
   const missing = hasTransform ? [] : fields.filter((f) => !columns.includes(f) && !f.includes("."));
   if (missing.length) {
     return { error: `The spec uses field(s) ${missing.join(", ")} but the query returns columns ${columns.join(", ")}.` };
+  }
+  if (basemap) {
+    try {
+      spec = await buildMap(spec, rows, basemap);
+    } catch (err) {
+      return { error: err.message };
+    }
   }
   spec.$schema = "https://vega.github.io/schema/vega-lite/v6.json";
   spec.data = { values: rows };

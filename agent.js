@@ -12,10 +12,10 @@ How to work:
    - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
    - load_series for long records at one or a few stations (trends, climatologies, records at a site).
 3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
-4. make_chart when a picture helps, with a Vega-Lite spec. The data comes from the chart's own SQL; do not put data or URLs in the spec.
+4. make_chart when a picture helps, with a Vega-Lite spec. For US maps, set basemap (state or county outlines, optionally zoomed to one state) and plot stations with longitude/latitude encodings, or color counties or states with basemap.color_by. The data comes from the chart's own SQL; do not put data or URLs in the spec.
 
 Tables:
-- stations(id, name, state, county, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID; county is the US county
+- stations(id, name, state, county, county_fips, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID; county and county_fips are the US county
 - coverage(id, element, first_year, last_year)
 - elements(element, units, description)
 - obs(station, element, date DATE, value DOUBLE, m_flag, obs_time) — only what load_series and load_area have loaded; values that failed NOAA quality control are already removed; join stations on obs.station = stations.id for names
@@ -146,8 +146,26 @@ export const TOOL_SCHEMAS = [
           sql: { type: "string" },
           vega_lite: { type: "object", description: "Vega-Lite spec without a data property" },
           title: { type: "string" },
+          basemap: {
+            type: "object",
+            description:
+              "Draw a US map under the chart. The spec's layers must then use longitude and latitude encodings (e.g. {\"mark\": \"circle\", \"encoding\": {\"longitude\": {\"field\": \"lon\", \"type\": \"quantitative\"}, \"latitude\": {\"field\": \"lat\", \"type\": \"quantitative\"}, \"color\": {\"field\": \"tmax_f\", \"type\": \"quantitative\"}}}). To shade counties or states by a value instead (a choropleth), give color_by; the query must then return one row per county with county_fips, or per state with state, plus the value column, and vega_lite can be {}.",
+            properties: {
+              level: { type: "string", enum: ["states", "counties"], description: "Which outlines to draw" },
+              state: { type: "string", description: "Zoom to one state, e.g., 'IL'" },
+              color_by: {
+                type: "object",
+                properties: {
+                  field: { type: "string", description: "Query column to shade by" },
+                  title: { type: "string" },
+                  scheme: { type: "string", description: "Vega color scheme, e.g., 'blues', 'reds', 'viridis', 'redblue'" },
+                },
+                required: ["field"],
+              },
+            },
+          },
         },
-        required: ["sql", "vega_lite"],
+        required: ["sql"],
       },
     },
   },

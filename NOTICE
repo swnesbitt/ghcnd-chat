@@ -18,3 +18,6 @@ licensed under Creative Commons Attribution 4.0.
 
 US county boundaries: U.S. Census Bureau, 2023 Cartographic Boundary Files
 (cb_2023_us_county_500k).
+
+Map outlines: us-atlas 3.0.1 (https://github.com/topojson/us-atlas), ISC
+license, derived from U.S. Census Bureau cartographic boundary files.

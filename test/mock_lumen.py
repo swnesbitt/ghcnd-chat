@@ -66,6 +66,25 @@ SCRIPT = [
     ("find_stations", {"place": "Peoria, IL", "radius_km": 30, "element": "TMAX"}),
     ("find_stations", {"county": "Champaign County", "state": "IL", "limit": 50}),
     ("load_area", {"county": "Schuyler", "state": "IL", "elements": ["TMAX"], "start_date": "1974-04-05"}),
+    # Maps: station dots on Illinois counties (lon/lat sent on x/y), then a county choropleth.
+    ("make_chart", {
+        "title": "Illinois highs, April 5, 1974",
+        "sql": """SELECT s.lon, s.lat, s.name, round(o.value * 9 / 5 + 32) AS tmax_f FROM obs o
+                  JOIN stations s ON s.id = o.station
+                  WHERE o.element = 'TMAX' AND o.date = DATE '1974-04-05' AND s.state = 'IL'""",
+        "vega_lite": {"mark": "circle", "encoding": {"x": {"field": "lon", "type": "quantitative"},
+                                                    "y": {"field": "lat", "type": "quantitative"},
+                                                    "color": {"field": "tmax_f", "type": "quantitative"}}},
+        "basemap": {"level": "counties", "state": "IL"},
+    }),
+    ("make_chart", {
+        "title": "County maximum, April 5, 1974",
+        "sql": """SELECT s.county_fips, max(round(o.value * 9 / 5 + 32)) AS tmax_f FROM obs o
+                  JOIN stations s ON s.id = o.station
+                  WHERE o.element = 'TMAX' AND o.date = DATE '1974-04-05' AND s.state = 'IL' GROUP BY 1""",
+        "vega_lite": {},
+        "basemap": {"level": "counties", "state": "IL", "color_by": {"field": "tmax_f", "scheme": "reds"}},
+    }),
 ]
 
 FINAL = """The wettest years at **CHAMPAIGN 3S** (`USC00118740`) since 1990, counting only years with at least 90% of days present:

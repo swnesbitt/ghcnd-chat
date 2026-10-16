@@ -24,6 +24,7 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 | File | What it is |
 |------|------------|
 | `index.html`, `styles.css` | The page, in University of Illinois brand (Illinois Web Toolkit header and footer, CliMAS unit), and its Content-Security-Policy |
+| `geo/us-counties-10m.json` | US county, state and nation outlines for maps ([us-atlas](https://github.com/topojson/us-atlas) 3.0.1, Census 1:10m cartographic boundaries, 840 KB TopoJSON), loaded on the first map |
 | `img/climas-icon.jpg` | CliMAS icon, used as the favicon and on the sign-in view |
 | `config.js` | Lumen URL, default model, guard-rail limits |
 | `app.js` | Sign-in, UI, charts |
@@ -128,6 +129,16 @@ Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
 files, so a statewide question ("the highest temperature in Illinois on 4/5/1974")
 costs one element-year download (about 19 MB for 1974 TMAX) and covers all 107
 Illinois stations that reported that day.
+
+## Maps
+
+`make_chart` takes an optional `basemap`: `{"level": "states" | "counties", "state": "IL"}`
+draws state or county outlines, zoomed to one state if given, under the model's
+layers, which then place stations with `longitude`/`latitude` encodings (models
+that put lon/lat on x/y are corrected). With `"color_by": {"field": ...}` it shades
+counties (query returns `county_fips`) or states (query returns `state`) instead:
+a choropleth. Map points default to larger dots with white edges and a viridis
+color scale so they read on the gray basemap.
 
 ## Security
 

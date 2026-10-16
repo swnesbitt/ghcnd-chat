@@ -105,7 +105,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     CREATE TABLE coverage AS
       SELECT id, element, first_year, last_year FROM 'station_index.parquet';
     CREATE TABLE stations AS
-      SELECT DISTINCT id, name, state, county, substr(id, 1, 2) AS country,
+      SELECT DISTINCT id, name, state, county, county_fips, substr(id, 1, 2) AS country,
              lat, lon, elev AS elev_m
       FROM 'station_index.parquet';
     CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);

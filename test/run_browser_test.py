@@ -33,6 +33,7 @@ def prepare_site(dst: Path) -> None:
     for f in SITE_FILES:
         shutil.copy(ROOT / f, dst / f)
     shutil.copytree(ROOT / "img", dst / "img")
+    shutil.copytree(ROOT / "geo", dst / "geo")
     cfg = (dst / "config.js").read_text()
     cfg = re.sub(r'lumenBaseUrl: "[^"]*"', f'lumenBaseUrl: "{MOCK}"', cfg)
     (dst / "config.js").write_text(cfg)
@@ -102,20 +103,20 @@ def main() -> int:
 
             steps = page.eval_on_selector_all(".step summary", "s => s.map(x => x.textContent)")
             print("steps:", json.dumps(steps, indent=1))
-            if len(steps) < 15:
+            if len(steps) < 17:
                 print("LOG:", page.text_content("#log"), "\nBANNER:", page.text_content("#banner"))
                 print("CONSOLE:", "\n".join(console[-20:]))
                 return 1
-            check(len(steps) == 15, "fifteen tool steps shown")
+            check(len(steps) == 17, "seventeen tool steps shown")
             check(not any(s.endswith("(failed)") for s in steps[:6]), "search, loads, area load and queries succeeded")
             check(steps[6].endswith("(failed)") and steps[7].endswith("(failed)"), "forbidden SQL refused")
             check(not steps[8].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
             check(not steps[9].endswith("(failed)"), "histogram without y renders")
             check(not steps[10].endswith("(failed)"), "chart step succeeded")
             n_marks = page.locator(".chart svg.marks, .chart canvas.marks").count()
-            if n_marks != 3:
+            if n_marks != 5:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
-            check(n_marks == 3, "all three charts rendered")
+            check(n_marks == 5, "all five charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
             check(page.locator("#records li:not(.axis)").count() == 5, "rail shows three series and two area loads")
@@ -143,6 +144,12 @@ def main() -> int:
             check(schuyler["results"][0]["stations_reporting"] >= 1, "county load_area works")
             hist = page.evaluate("[...document.querySelectorAll('.chart')][1].querySelector('svg.marks').textContent")
             check("Count" in hist, "histogram got a count axis")
+            check(not steps[15].endswith("(failed)") and not steps[16].endswith("(failed)"), "map steps succeeded")
+            paths = page.evaluate("[...document.querySelectorAll('.chart')].slice(3).map(c => c.querySelectorAll('svg.marks path').length)")
+            print("map paths:", paths)
+            check(len(paths) == 2 and all(n >= 100 for n in paths), "both maps draw Illinois's 102 counties")
+            for i in (3, 4):
+                page.locator(".chart").nth(i).screenshot(path=str(out / f"map-{i}.png"))
             check(all("reasoning_content" not in m for m in last), "reasoning fields stripped")
             for m in last:
                 if m["role"] == "tool":
