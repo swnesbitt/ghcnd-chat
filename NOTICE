@@ -1,0 +1,14 @@
+GHCN-Daily chat
+
+lumen-oauth.js is copied unchanged from Lumen (https://github.com/ncsa/lumen,
+scripts/web-oauth), licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0):
+
+  Lumen
+  Copyright 2026 The Board of Trustees of the University of Illinois
+
+  This product includes software developed at the
+  National Center for Supercomputing Applications (NCSA).
+
+GHCN-Daily data: NOAA National Centers for Environmental Information, via the
+NOAA Open Data Dissemination program (s3://noaa-ghcn-pds).

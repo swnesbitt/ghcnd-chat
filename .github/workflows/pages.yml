@@ -1,0 +1,53 @@
+# Publishes the site to GitHub Pages with a freshly built station index.
+# The index is built in CI and shipped in the Pages artifact rather than
+# committed, so the repository does not grow by 4 MB every night.
+#
+# One-time setup: Settings > Pages > Build and deployment > Source: GitHub Actions.
+
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 7 * * *"   # daily, after NOAA's overnight metadata refresh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build station index
+        run: |
+          pip install duckdb
+          python scripts/build_station_index.py station_index.parquet
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp index.html styles.css app.js agent.js ghcnd.js config.js lumen-oauth.js station_index.parquet _site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

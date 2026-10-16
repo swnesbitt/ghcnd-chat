@@ -1,0 +1,179 @@
+// agent.js — the tool-calling loop. Lumen forwards `tools` and `tool_choice`
+// to the model backend, so the whole loop runs here in the browser: ask the
+// model, run the tools it calls, send the results back, repeat until it answers.
+
+import { CONFIG } from "./config.js";
+
+export const SYSTEM_PROMPT = `You help a meteorologist explore NOAA GHCN-Daily (GHCNd) station observations. You work only through the tools below, which run DuckDB in the user's browser over NOAA's public GHCNd data.
+
+How to work:
+1. find_stations to identify stations. Names repeat across states and countries (several stations are named URBANA, in different states). When the place the user means is ambiguous, list the candidates (ID, name, state, coverage) and ask; when one clearly matches, say which one you chose.
+2. load_series to load daily values for the chosen station(s) and elements into the table obs.
+3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
+4. make_chart when a picture helps, with a Vega-Lite spec. The data comes from the chart's own SQL; do not put data or URLs in the spec.
+
+Tables:
+- stations(id, name, state, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID
+- coverage(id, element, first_year, last_year)
+- elements(element, units, description)
+- obs(station, element, date DATE, value DOUBLE, m_flag) — only what load_series has loaded; values that failed NOAA quality control are already removed
+
+Data rules:
+- Units in obs: PRCP, SNOW, SNWD in mm; TMAX, TMIN, TAVG in °C. Convert to inches or °F only when the user asks or clearly expects US units.
+- obs can hold several stations and elements at once; always filter by station and element.
+- A missing day is missing, not zero. For monthly, seasonal or annual totals and means, count the days present and exclude or flag periods with poor coverage (say what threshold you used, e.g., 90% of days).
+- m_flag 'T' marks trace precipitation, stored as 0.
+- TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
+- NOAA updates the data daily; the latest days may be incomplete.
+
+Answers: name the station ID and period used, put key numbers in a small markdown table, and keep it short. Every number must come from a tool result; never estimate values you did not compute.`;
+
+export const TOOL_SCHEMAS = [
+  {
+    type: "function",
+    function: {
+      name: "find_stations",
+      description:
+        "Search the GHCN-Daily station index by name, ID, state, country, or distance from a point. Returns IDs, locations and period of record per element.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Part of the station name (e.g., 'CHAMPAIGN') or an exact 11-character station ID" },
+          state: { type: "string", description: "US state or Canadian province code, e.g., 'IL'" },
+          country: { type: "string", description: "2-letter FIPS country code (first two characters of the ID), e.g., 'US', 'AR'" },
+          lat: { type: "number" },
+          lon: { type: "number" },
+          radius_km: { type: "number", description: "Search radius around lat/lon; default 50" },
+          element: { type: "string", enum: ["PRCP", "SNOW", "SNWD", "TMAX", "TMIN", "TAVG"], description: "Only stations that report this element" },
+          min_years: { type: "number", description: "Minimum period of record in years for the element" },
+          limit: { type: "number", description: "Maximum stations to return (default 10, max 50)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_series",
+      description:
+        "Load daily observations for one station into table obs (replacing earlier loads of the same station and element). History comes from small per-station files; recent years need whole element-year files, so long requests for stations without per-station files can be refused.",
+      parameters: {
+        type: "object",
+        properties: {
+          station: { type: "string", description: "11-character station ID from find_stations" },
+          elements: {
+            type: "array",
+            items: { type: "string", enum: ["PRCP", "SNOW", "SNWD", "TMAX", "TMIN", "TAVG"] },
+            description: "Elements to load; default ['PRCP']",
+          },
+          start_year: { type: "number" },
+          end_year: { type: "number" },
+        },
+        required: ["station"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_sql",
+      description:
+        "Run one read-only DuckDB SQL query (SELECT, WITH, SUMMARIZE, DESCRIBE) over stations, coverage, elements and obs. Returns at most 200 rows.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "make_chart",
+      description:
+        "Show the user a chart. Give a read-only SQL query that returns the rows to plot and a Vega-Lite spec whose fields match the query's column names. The rows are inserted as the spec's data.",
+      parameters: {
+        type: "object",
+        properties: {
+          sql: { type: "string" },
+          vega_lite: { type: "object", description: "Vega-Lite spec without a data property" },
+          title: { type: "string" },
+        },
+        required: ["sql", "vega_lite"],
+      },
+    },
+  },
+];
+
+// Keep only the fields a chat request accepts; some backends add reasoning
+// fields to replies that they reject when sent back.
+function cleanAssistant(msg) {
+  const out = { role: "assistant", content: msg.content ?? "" };
+  if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
+  return out;
+}
+
+function clip(text, max = 16000) {
+  return text.length > max ? text.slice(0, max) + `… [truncated ${text.length - max} characters]` : text;
+}
+
+/**
+ * Run one user turn.
+ * @param {object} o
+ * @param {object} o.lumen      client from lumen-oauth.js
+ * @param {string} o.model
+ * @param {Array}  o.messages   conversation so far, including the new user message; appended to in place
+ * @param {object} o.handlers   tool name -> async (args) => result
+ * @param {function} o.onStep   UI callback: {type: "thinking" | "tool_start" | "tool_end", ...}
+ * @param {AbortSignal} o.signal
+ * @returns {Promise<string>} the assistant's final text
+ */
+export async function runTurn({ lumen, model, messages, handlers, onStep = () => {}, signal }) {
+  for (let step = 0; step < CONFIG.maxToolSteps; step++) {
+    onStep({ type: "thinking" });
+    const resp = await lumen.api("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        tools: TOOL_SCHEMAS,
+        tool_choice: "auto",
+        temperature: 0.2,
+      }),
+      signal,
+    });
+    const body = await resp.json();
+    const msg = body.choices?.[0]?.message;
+    if (!msg) throw new Error("The model returned no message.");
+    messages.push(cleanAssistant(msg));
+    if (!msg.tool_calls?.length) return msg.content ?? "";
+
+    for (const call of msg.tool_calls) {
+      const name = call.function?.name;
+      let args;
+      let result;
+      try {
+        args = JSON.parse(call.function?.arguments || "{}");
+      } catch {
+        args = null;
+      }
+      onStep({ type: "tool_start", id: call.id, name, args });
+      if (args === null) {
+        result = { error: "Arguments were not valid JSON." };
+      } else if (!handlers[name]) {
+        result = { error: `Unknown tool ${name}.` };
+      } else {
+        try {
+          result = await handlers[name](args);
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          result = { error: String(err.message || err) };
+        }
+      }
+      onStep({ type: "tool_end", id: call.id, name, args, result });
+      messages.push({ role: "tool", tool_call_id: call.id, content: clip(JSON.stringify(result)) });
+    }
+  }
+  throw new Error(`Stopped after ${CONFIG.maxToolSteps} tool steps without an answer. Try a narrower question.`);
+}

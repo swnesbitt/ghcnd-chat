@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    Content-Security-Policy. connect-src is the allowlist that keeps the page
+    (and DuckDB's worker, which inherits this policy) from sending anything to
+    hosts other than Lumen, the NOAA bucket, the CDN and DuckDB's extension
+    server (DuckDB-WASM fetches its parquet reader from there on first use). Put your Lumen origin
+    here; it must match lumenBaseUrl in config.js. For local development with
+    Lumen on http://localhost:5001, add that origin too.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval';
+    worker-src 'self' blob:;
+    connect-src 'self' https://lumen.computes.illinois.edu https://noaa-ghcn-pds.s3.amazonaws.com https://cdn.jsdelivr.net https://extensions.duckdb.org;
+    img-src 'self' data: blob:;
+    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+    font-src https://fonts.gstatic.com;
+    object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>GHCN-Daily chat</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <h1>GHCN-Daily chat</h1>
+    <div class="session" id="session" hidden>
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <button type="button" id="new-chat" class="quiet">New conversation</button>
+      <button type="button" id="disconnect" class="quiet">Disconnect</button>
+    </div>
+  </header>
+
+  <p id="banner" class="banner" role="alert" hidden></p>
+
+  <main id="connect-view" class="connect" hidden>
+    <h2>Ask questions of a century of daily weather observations.</h2>
+    <p>
+      This page answers questions about NOAA's Global Historical Climatology Network Daily
+      record by searching stations, loading their observations and running the numbers in your
+      browser. The language model runs through Lumen, so you sign in there and approve a key
+      for this page.
+    </p>
+    <button type="button" id="connect" class="primary">Connect to Lumen</button>
+    <p class="fine">
+      The key is stored in this browser only. To stop it working, revoke it on your Lumen
+      Profile page.
+    </p>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <section class="conversation" aria-label="Conversation">
+      <div id="log" class="log" aria-live="polite">
+        <div id="empty" class="empty">
+          <p>Ask about any GHCN-Daily station: records, trends, extremes, comparisons. A few to start:</p>
+          <ul class="examples">
+            <li><button type="button">What were the ten wettest years at Champaign-Urbana, Illinois?</button></li>
+            <li><button type="button">How has the number of 90 °F days at Chicago O'Hare changed since 1960?</button></li>
+            <li><button type="button">Compare the average first fall freeze date at Urbana and Peoria over the last 30 years.</button></li>
+          </ul>
+        </div>
+      </div>
+
+      <form id="composer" class="composer">
+        <label for="prompt" class="visually-hidden">Your question</label>
+        <textarea id="prompt" rows="2" placeholder="Ask about a station, a place, or a period"></textarea>
+        <button type="submit" id="send" class="primary">Ask</button>
+        <button type="button" id="stop" class="quiet" hidden>Stop</button>
+      </form>
+      <p id="status" class="status" aria-live="polite"></p>
+    </section>
+
+    <aside class="rail" aria-labelledby="rail-heading">
+      <h2 id="rail-heading">Period of record</h2>
+      <p id="rail-empty" class="fine">Stations you load appear here, with the span loaded against the station's full record.</p>
+      <ol id="records" class="records"></ol>
+      <p id="downloaded" class="fine downloaded"></p>
+    </aside>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
