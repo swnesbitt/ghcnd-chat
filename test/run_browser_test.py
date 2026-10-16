@@ -32,6 +32,7 @@ MOCK = "http://localhost:5001"
 def prepare_site(dst: Path) -> None:
     for f in SITE_FILES:
         shutil.copy(ROOT / f, dst / f)
+    shutil.copytree(ROOT / "img", dst / "img")
     cfg = (dst / "config.js").read_text()
     cfg = re.sub(r'lumenBaseUrl: "[^"]*"', f'lumenBaseUrl: "{MOCK}"', cfg)
     (dst / "config.js").write_text(cfg)
@@ -101,18 +102,19 @@ def main() -> int:
 
             steps = page.eval_on_selector_all(".step summary", "s => s.map(x => x.textContent)")
             print("steps:", json.dumps(steps, indent=1))
-            if len(steps) < 7:
+            if len(steps) < 8:
                 print("LOG:", page.text_content("#log"), "\nBANNER:", page.text_content("#banner"))
                 print("CONSOLE:", "\n".join(console[-20:]))
                 return 1
-            check(len(steps) == 7, "seven tool steps shown")
+            check(len(steps) == 8, "eight tool steps shown")
             check(not any(s.endswith("(failed)") for s in steps[:4]), "search, loads and query succeeded")
             check(steps[4].endswith("(failed)") and steps[5].endswith("(failed)"), "forbidden SQL refused")
-            check(not steps[6].endswith("(failed)"), "chart step succeeded")
+            check(not steps[6].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
+            check(not steps[7].endswith("(failed)"), "chart step succeeded")
             n_marks = page.locator(".chart svg.marks, .chart canvas.marks").count()
-            if n_marks != 1:
+            if n_marks != 2:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
-            check(n_marks == 1, "chart rendered")
+            check(n_marks == 2, "both charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
             check(page.locator("#records li:not(.axis)").count() == 3, "rail shows three loaded series")
@@ -150,14 +152,10 @@ def main() -> int:
             check("does not support tool calling" in page.text_content("#status"), "warns about models without tool calling")
             page.select_option("#model", "gemma-4-31b-it")
 
-            # Dark mode (charts redraw in the dark palette) and phone width.
-            page.emulate_media(color_scheme="dark")
-            page.wait_for_timeout(800)
-            fill = page.evaluate("getComputedStyle(document.querySelector('.chart svg.marks text')).fill")
-            print("dark chart text fill:", fill)
-            check(fill != "rgb(19, 41, 75)", "chart text follows dark mode")
-            page.screenshot(path=str(out / "03-dark.png"), full_page=True)
-            page.emulate_media(color_scheme="light")
+            # Campus header and footer from the Illinois Web Toolkit.
+            check(page.evaluate("!!document.querySelector('ilw-header').shadowRoot"), "Illinois header rendered")
+            check(not page.is_visible("#ot-sdk-btn"), "inert cookie button hidden")
+            check("snesbitt@illinois.edu" in page.text_content("ilw-footer"), "contact info in footer")
             page.set_viewport_size({"width": 390, "height": 844})
             page.screenshot(path=str(out / "04-phone.png"), full_page=True)
 

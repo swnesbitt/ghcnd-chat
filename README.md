@@ -23,7 +23,8 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 
 | File | What it is |
 |------|------------|
-| `index.html`, `styles.css` | The page and its Content-Security-Policy |
+| `index.html`, `styles.css` | The page, in University of Illinois brand (Illinois Web Toolkit header and footer, CliMAS unit), and its Content-Security-Policy |
+| `img/climas-icon.jpg` | CliMAS icon, used as the favicon and on the sign-in view |
 | `config.js` | Lumen URL, default model, guard-rail limits |
 | `app.js` | Sign-in, UI, charts |
 | `agent.js` | System prompt, tool schemas, the tool-calling loop |
@@ -125,6 +126,10 @@ Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
   results and station names are inserted as text. Charts are drawn with Vega's
   expression interpreter, so the CSP needs no `unsafe-eval`, and any `url` in a
   model's chart spec is removed.
+- **Campus footer.** The Illinois toolkit footer tries to add the campus OneTrust
+  cookie script. The CSP blocks it, because a third-party script could read the
+  Lumen key and the page sets no cookies, and the inert "About Cookies" button is
+  hidden. The two CSP messages this leaves in the console are expected.
 - **The key** is kept in `localStorage`, as in Lumen's example. **Disconnect**
   forgets it in this browser; revoking it on the Lumen Profile page stops it
   everywhere.

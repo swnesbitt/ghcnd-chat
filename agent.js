@@ -91,7 +91,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "make_chart",
       description:
-        "Show the user a chart. Give a read-only SQL query that returns the rows to plot and a Vega-Lite spec whose fields match the query's column names. The rows are inserted as the spec's data.",
+        "Show the user a chart. Give a read-only SQL query that returns the rows to plot and a Vega-Lite v6 spec (a JSON object, not a string) whose fields match the query's column names. The rows are inserted as the spec's data, so leave data out. Keep specs simple, e.g. {\"mark\": \"line\", \"encoding\": {\"x\": {\"field\": \"year\", \"type\": \"quantitative\"}, \"y\": {\"field\": \"days_90f\", \"type\": \"quantitative\", \"title\": \"Days at or above 90 °F\"}}}. For several series, return a long table with a series column and encode it as color.",
       parameters: {
         type: "object",
         properties: {

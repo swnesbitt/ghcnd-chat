@@ -243,7 +243,8 @@ function onStep(s) {
       details.querySelector("summary").textContent += " (failed)";
     }
     const call = s.name === "run_sql" ? s.args?.query
-      : s.name === "make_chart" ? s.args?.sql
+      : s.name === "make_chart"
+        ? `${s.args?.sql ?? ""}\n\n${JSON.stringify(s.args?.vega_lite ?? s.args?.spec ?? null, null, 2)}`
       : JSON.stringify(s.args, null, 2);
     const result = JSON.stringify(s.result, null, 2);
     details.append(
@@ -268,38 +269,110 @@ function chartConfig() {
   const css = getComputedStyle(document.documentElement);
   const v = (name) => css.getPropertyValue(name).trim();
   return {
-    font: "Public Sans, system-ui, sans-serif",
+    font: "Source Sans 3, Source Sans Pro, system-ui, sans-serif",
     background: null,
     view: { stroke: null },
-    axis: { labelColor: v("--ink-soft"), titleColor: v("--ink"), gridColor: v("--rule"), domainColor: v("--rule"), tickColor: v("--rule"), labelFontSize: 11, titleFontSize: 12, titleFontWeight: 600 },
+    axis: { labelColor: v("--ink-soft"), titleColor: v("--ink"), gridColor: v("--record"), domainColor: v("--rule"), tickColor: v("--rule"), labelFontSize: 12, titleFontSize: 13, titleFontWeight: 600 },
     legend: { labelColor: v("--ink-soft"), titleColor: v("--ink") },
-    title: { color: v("--ink"), fontSize: 13, fontWeight: 600, anchor: "start" },
-    range: { category: ["#2c6e9e", "#b8423a", "#3f8f5b", "#c58a1b", "#6b4f9e", "#5b6b7f"] },
-    mark: { color: "#2c6e9e" },
+    title: { color: v("--ink"), font: "Montserrat, system-ui, sans-serif", fontSize: 14, fontWeight: 700, anchor: "start" },
+    range: { category: ["#13294b", "#c84113", "#009fd4", "#707372", "#5c0e41", "#4877b8"] },
+    mark: { color: "#13294b" },
   };
 }
 
-// Strip anything that would make Vega fetch on its own; the rows come from SQL.
-function sanitizeSpec(spec) {
-  const clean = JSON.parse(JSON.stringify(spec ?? {}));
-  const walk = (o) => {
-    if (!o || typeof o !== "object") return;
-    for (const k of Object.keys(o)) {
-      if (k === "url" || k === "href") delete o[k];
-      else walk(o[k]);
+const CHART_EXAMPLE =
+  '{"mark": "bar", "encoding": {"x": {"field": "year", "type": "ordinal"}, ' +
+  '"y": {"field": "total_mm", "type": "quantitative", "title": "Precipitation (mm)"}}}';
+
+// Keys where null means something in Vega-Lite (hide the axis, no sorting, ...).
+const MEANINGFUL_NULL = new Set(["axis", "legend", "sort", "scale", "stack", "header", "condition", "bin"]);
+
+// Turn whatever the model sent into a spec Vega-Lite accepts, or explain what
+// is wrong in terms the model can act on. Models often send the spec as a JSON
+// string, put nulls where Vega-Lite expects objects (a null layer encoding
+// makes it throw "Cannot convert undefined or null to object"), or add data
+// sources of their own. Anything that would make Vega fetch is removed; the
+// rows always come from the chart's SQL.
+function normalizeSpec(raw) {
+  let spec = raw;
+  if (typeof spec === "string") {
+    try {
+      spec = JSON.parse(spec);
+    } catch {
+      throw new Error(`vega_lite must be a JSON object, not text. Example: ${CHART_EXAMPLE}`);
     }
+  }
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    throw new Error(`vega_lite must be a Vega-Lite spec object. Example: ${CHART_EXAMPLE}`);
+  }
+  spec = JSON.parse(JSON.stringify(spec));
+
+  const clean = (node, parentKey) => {
+    if (Array.isArray(node)) return node.filter((x) => x !== null && x !== undefined).map((x) => clean(x, parentKey));
+    if (!node || typeof node !== "object") return node;
+    for (const k of Object.keys(node)) {
+      const v = node[k];
+      if (k === "url" || k === "href" || k === "datasets") delete node[k];
+      else if (k === "data" && !(v && Array.isArray(v.values))) delete node[k]; // inherit the SQL rows
+      else if (v === null && !MEANINGFUL_NULL.has(k)) delete node[k];
+      else node[k] = clean(v, k);
+    }
+    return node;
   };
-  walk(clean);
-  delete clean.data;
-  delete clean.datasets;
-  return clean;
+  spec = clean(spec);
+  delete spec.data;
+  delete spec.$schema;
+  delete spec.autosize;
+
+  const composite = ["layer", "facet", "hconcat", "vconcat", "concat", "repeat"].some((k) => spec[k]);
+  if (!spec.mark && !composite) {
+    throw new Error(`The spec needs a "mark" (or "layer"). Example: ${CHART_EXAMPLE}`);
+  }
+  // Years encoded as numbers get thousands separators ("2,020"); format them plainly.
+  const fixYears = (node) => {
+    if (!node || typeof node !== "object") return;
+    for (const ch of ["x", "y", "x2", "y2"]) {
+      const enc = node.encoding?.[ch];
+      if (enc && /(^|_)(year|yr)$/i.test(enc.field || "") && (enc.type === "quantitative" || !enc.type) && enc.axis !== null) {
+        enc.axis = { format: "d", ...(enc.axis || {}) };
+      }
+    }
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) if (Array.isArray(node[k])) node[k].forEach(fixYears);
+    if (node.spec) fixYears(node.spec);
+  };
+  fixYears(spec);
+  if (Array.isArray(spec.layer)) {
+    spec.layer = spec.layer.filter((l) => l && typeof l === "object");
+    if (spec.layer.some((l) => !l.mark && !l.layer)) throw new Error('Every item in "layer" needs a "mark".');
+  }
+  return spec;
 }
 
-async function makeChart({ sql, vega_lite, title }) {
+async function makeChart(args) {
+  const { sql, title } = args;
+  // Accept the spellings models tend to use for the spec.
+  const raw = args.vega_lite ?? args.vegaLite ?? args.spec ?? args.vega_lite_spec ?? args.chart;
   const g = await ghcndPromise;
   const { rows, truncated } = await g.select(sql, CONFIG.maxChartRows);
   if (!rows.length) return { error: "The chart query returned no rows." };
-  const spec = sanitizeSpec(vega_lite);
+  let spec;
+  try {
+    spec = normalizeSpec(raw);
+  } catch (err) {
+    return { error: err.message };
+  }
+  const columns = Object.keys(rows[0]);
+  const fields = [];
+  JSON.stringify(spec, (k, v) => {
+    if (k === "field" && typeof v === "string") fields.push(v);
+    return v;
+  });
+  // Transforms can create fields, so only check specs without them.
+  const hasTransform = JSON.stringify(spec).includes('"transform"');
+  const missing = hasTransform ? [] : fields.filter((f) => !columns.includes(f) && !f.includes("."));
+  if (missing.length) {
+    return { error: `The spec uses field(s) ${missing.join(", ")} but the query returns columns ${columns.join(", ")}.` };
+  }
   spec.$schema = "https://vega.github.io/schema/vega-lite/v6.json";
   spec.data = { values: rows };
   if (spec.width === undefined && !spec.facet && !spec.hconcat && !spec.concat && !spec.repeat) spec.width = "container";
@@ -325,7 +398,10 @@ async function makeChart({ sql, vega_lite, title }) {
     await draw();
   } catch (err) {
     fig.remove();
-    return { error: `Vega-Lite could not render the spec: ${err.message}` };
+    return {
+      error: `Vega-Lite could not render the spec: ${err.message}. Simplify it to a single mark with x and y ` +
+        `encodings on the query's columns (${columns.join(", ")}), for example ${CHART_EXAMPLE}`,
+    };
   }
   charts.push(draw);
   scrollToEnd();

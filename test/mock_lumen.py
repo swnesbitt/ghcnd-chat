@@ -26,6 +26,14 @@ SCRIPT = [
     ("run_sql", {"query": "SELECT * FROM read_csv('https://example.com/leak.csv')"}),
     ("run_sql", {"query": "SELECT 1; DROP TABLE obs"}),
     ("make_chart", {
+        "title": "Layered spec with nulls, sent as a string",
+        "sql": "SELECT year(date) AS year, sum(value) AS total_mm FROM obs WHERE station = 'USC00118740' AND element = 'PRCP' GROUP BY 1 ORDER BY 1",
+        "vega_lite": json.dumps({"layer": [{"mark": "line", "encoding": None}, None],
+                                 "encoding": {"x": {"field": "year", "type": "quantitative"},
+                                              "y": {"field": "total_mm", "type": "quantitative"}},
+                                 "autosize": None, "config": None}),
+    }),
+    ("make_chart", {
         "title": "Annual precipitation, Champaign 3S",
         "sql": """SELECT year(date) AS year, round(sum(value) / 25.4, 2) AS inches, count(*) AS days
                   FROM obs WHERE station = 'USC00118740' AND element = 'PRCP'
