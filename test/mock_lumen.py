@@ -33,6 +33,13 @@ SCRIPT = [
                                               "y": {"field": "total_mm", "type": "quantitative"}},
                                  "autosize": None, "config": None}),
     }),
+    # Histogram with the count channel left out: the page must add it.
+    ("make_chart", {
+        "title": "Histogram without y",
+        "sql": """SELECT value * 9 / 5 + 32 AS tmax_f FROM obs
+                  WHERE station = 'USC00118740' AND element = 'TMAX' AND month(date) = 10 AND day(date) = 16""",
+        "vega_lite": {"mark": "bar", "encoding": {"x": {"field": "tmax_f", "bin": True, "type": "quantitative"}}},
+    }),
     ("make_chart", {
         "title": "Annual precipitation, Champaign 3S",
         "sql": """SELECT year(date) AS year, round(sum(value) / 25.4, 2) AS inches, count(*) AS days

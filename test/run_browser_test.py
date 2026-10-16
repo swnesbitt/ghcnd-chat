@@ -102,19 +102,20 @@ def main() -> int:
 
             steps = page.eval_on_selector_all(".step summary", "s => s.map(x => x.textContent)")
             print("steps:", json.dumps(steps, indent=1))
-            if len(steps) < 8:
+            if len(steps) < 9:
                 print("LOG:", page.text_content("#log"), "\nBANNER:", page.text_content("#banner"))
                 print("CONSOLE:", "\n".join(console[-20:]))
                 return 1
-            check(len(steps) == 8, "eight tool steps shown")
+            check(len(steps) == 9, "nine tool steps shown")
             check(not any(s.endswith("(failed)") for s in steps[:4]), "search, loads and query succeeded")
             check(steps[4].endswith("(failed)") and steps[5].endswith("(failed)"), "forbidden SQL refused")
             check(not steps[6].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
-            check(not steps[7].endswith("(failed)"), "chart step succeeded")
+            check(not steps[7].endswith("(failed)"), "histogram without y renders")
+            check(not steps[8].endswith("(failed)"), "chart step succeeded")
             n_marks = page.locator(".chart svg.marks, .chart canvas.marks").count()
-            if n_marks != 2:
+            if n_marks != 3:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
-            check(n_marks == 2, "both charts rendered")
+            check(n_marks == 3, "all three charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
             check(page.locator("#records li:not(.axis)").count() == 3, "rail shows three loaded series")
@@ -124,6 +125,9 @@ def main() -> int:
             reqs = [json.loads(l) for l in (work / "requests.jsonl").read_text().splitlines()]
             last = reqs[-1]["messages"]
             check(reqs[-1]["messages"][0]["role"] == "system", "system prompt sent")
+            check("Today is" in reqs[-1]["messages"][0]["content"], "system prompt carries today's date")
+            hist = page.evaluate("[...document.querySelectorAll('.chart')][1].querySelector('svg.marks').textContent")
+            check("Count" in hist, "histogram got a count axis")
             check(all("reasoning_content" not in m for m in last), "reasoning fields stripped")
             for m in last:
                 if m["role"] == "tool":

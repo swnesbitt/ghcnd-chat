@@ -26,7 +26,20 @@ Data rules:
 - TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
 - NOAA updates the data daily; the latest days may be incomplete.
 
+SQL is DuckDB, not SQLite:
+- Dates: year(date), month(date), day(date), strftime(date, '%m-%d') with the date first, date_diff('day', a, b). There is no 'now'.
+- For "today", use the literal date given at the end of these instructions (DATE 'YYYY-MM-DD'), not current_date: the database clock is UTC and can already be tomorrow.
+- The same calendar day in every year: WHERE month(date) = <month> AND day(date) = <day>, with today's numbers.
+- One statement per call, no trailing semicolon needed.
+
 Answers: name the station ID and period used, put key numbers in a small markdown table, and keep it short. Every number must come from a tool result; never estimate values you did not compute.`;
+
+// The model has no clock, so every request carries the user's local date.
+export function systemPrompt(now = new Date()) {
+  const date = now.toLocaleDateString("en-CA"); // YYYY-MM-DD in the browser's time zone
+  const day = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return `${SYSTEM_PROMPT}\n\nToday is ${day} (${date}) in the user's time zone. "Today" in a question means this calendar day: month ${now.getMonth() + 1}, day ${now.getDate()}.`;
+}
 
 export const TOOL_SCHEMAS = [
   {
@@ -91,7 +104,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "make_chart",
       description:
-        "Show the user a chart. Give a read-only SQL query that returns the rows to plot and a Vega-Lite v6 spec (a JSON object, not a string) whose fields match the query's column names. The rows are inserted as the spec's data, so leave data out. Keep specs simple, e.g. {\"mark\": \"line\", \"encoding\": {\"x\": {\"field\": \"year\", \"type\": \"quantitative\"}, \"y\": {\"field\": \"days_90f\", \"type\": \"quantitative\", \"title\": \"Days at or above 90 °F\"}}}. For several series, return a long table with a series column and encode it as color.",
+        "Show the user a chart. Give a read-only SQL query that returns the rows to plot and a Vega-Lite v6 spec (a JSON object, not a string) whose fields match the query's column names. The rows are inserted as the spec's data, so leave data out. Keep specs simple, e.g. {\"mark\": \"line\", \"encoding\": {\"x\": {\"field\": \"year\", \"type\": \"quantitative\"}, \"y\": {\"field\": \"days_90f\", \"type\": \"quantitative\", \"title\": \"Days at or above 90 °F\"}}}. For several series, return a long table with a series column and encode it as color. For a histogram, return the raw values and use {\"mark\": \"bar\", \"encoding\": {\"x\": {\"field\": \"tmax_f\", \"bin\": {\"step\": 2}, \"type\": \"quantitative\"}, \"y\": {\"aggregate\": \"count\", \"type\": \"quantitative\"}}}.",
       parameters: {
         type: "object",
         properties: {
@@ -136,7 +149,7 @@ export async function runTurn({ lumen, model, messages, handlers, onStep = () =>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        messages: [{ role: "system", content: systemPrompt() }, ...messages],
         tools: TOOL_SCHEMAS,
         tool_choice: "auto",
         temperature: 0.2,

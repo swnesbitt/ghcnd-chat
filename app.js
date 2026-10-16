@@ -275,8 +275,8 @@ function chartConfig() {
     axis: { labelColor: v("--ink-soft"), titleColor: v("--ink"), gridColor: v("--record"), domainColor: v("--rule"), tickColor: v("--rule"), labelFontSize: 12, titleFontSize: 13, titleFontWeight: 600 },
     legend: { labelColor: v("--ink-soft"), titleColor: v("--ink") },
     title: { color: v("--ink"), font: "Montserrat, system-ui, sans-serif", fontSize: 14, fontWeight: 700, anchor: "start" },
-    range: { category: ["#13294b", "#c84113", "#009fd4", "#707372", "#5c0e41", "#4877b8"] },
-    mark: { color: "#13294b" },
+    range: { category: ["#1d58a7", "#c84113", "#009fd4", "#707372", "#5c0e41", "#13294b"] },
+    mark: { color: "#1d58a7" },
   };
 }
 
@@ -341,6 +341,30 @@ function normalizeSpec(raw) {
     if (node.spec) fixYears(node.spec);
   };
   fixYears(spec);
+
+  // A bar, line or area mark without y draws full-height bands (a histogram
+  // whose count was left out looks like a wall of bars). Add the count when x
+  // is binned; otherwise ask the model for the missing channel.
+  const NEEDS_XY = new Set(["bar", "line", "area", "trail"]);
+  const checkXY = (node, inherited = {}) => {
+    if (!node || typeof node !== "object") return;
+    const enc = { ...inherited, ...(node.encoding || {}) };
+    if (Array.isArray(node.layer)) return node.layer.forEach((l) => checkXY(l, enc));
+    if (node.spec) return checkXY(node.spec, enc);
+    const mark = typeof node.mark === "string" ? node.mark : node.mark?.type;
+    if (!NEEDS_XY.has(mark)) return;
+    const count = { aggregate: "count", type: "quantitative", title: "Count" };
+    if (enc.x?.bin && !enc.y) node.encoding = { ...(node.encoding || {}), y: count };
+    else if (enc.y?.bin && !enc.x) node.encoding = { ...(node.encoding || {}), x: count };
+    else if (!enc.x || !enc.y) {
+      throw new Error(
+        `A ${mark} chart needs both x and y encodings. For a histogram: ` +
+          '{"mark": "bar", "encoding": {"x": {"field": "<value column>", "bin": true, "type": "quantitative"}, ' +
+          '"y": {"aggregate": "count", "type": "quantitative"}}}'
+      );
+    }
+  };
+  checkXY(spec);
   if (Array.isArray(spec.layer)) {
     spec.layer = spec.layer.filter((l) => l && typeof l === "object");
     if (spec.layer.some((l) => !l.mark && !l.layer)) throw new Error('Every item in "layer" needs a "mark".');
