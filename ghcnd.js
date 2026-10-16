@@ -105,10 +105,10 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     CREATE TABLE coverage AS
       SELECT id, element, first_year, last_year FROM 'station_index.parquet';
     CREATE TABLE stations AS
-      SELECT DISTINCT id, name, state, substr(id, 1, 2) AS country,
+      SELECT DISTINCT id, name, state, county, substr(id, 1, 2) AS country,
              lat, lon, elev AS elev_m
       FROM 'station_index.parquet';
-    CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR);
+    CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
   `);
   for (const [el, e] of Object.entries(ELEMENTS)) {
@@ -172,19 +172,117 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   }
 
   const fileList = (names) => `[${names.map(sqlString).join(", ")}]`;
-  const RAW_COLS = "ID, DATE, DATA_VALUE, M_FLAG, Q_FLAG";
+  const RAW_COLS = "ID, DATE, DATA_VALUE, M_FLAG, Q_FLAG, OBS_TIME";
 
   // ---- Tools --------------------------------------------------------------
 
-  async function findStations({ query, state, country, lat, lon, radius_km, element, min_years, limit = 10 } = {}) {
+  // ---- Areas: a state, a US county, a country, a radius around a place or
+  // a point, or a list of stations. Shared by find_stations and load_area.
+
+  let placesReady = null;
+  function ensurePlaces() {
+    placesReady ||= (async () => {
+      const resp = await fetch(new URL(CONFIG.placesUrl, location.href));
+      if (!resp.ok) throw new ToolError(`Place list not found (${resp.status}).`);
+      await db.registerFileBuffer("places.parquet", new Uint8Array(await resp.arrayBuffer()));
+      await q("CREATE TABLE places AS SELECT * FROM 'places.parquet'");
+    })().catch((err) => {
+      placesReady = null;
+      throw err;
+    });
+    return placesReady;
+  }
+
+  // "Peoria", "Peoria, IL", "Cordoba, AR" (a US state or an ISO country code
+  // after the comma), with state or country as separate hints.
+  async function resolvePlace(place, state, country) {
+    await ensurePlaces();
+    let [name, region] = String(place).split(",").map((x) => x.trim());
+    region = (region || state || "").toUpperCase();
+    const iso = String(country || "").toUpperCase();
+    const where = [`(lower(name) = lower(${sqlString(name)}) OR lower(asciiname) = lower(${sqlString(name)}))`];
+    if (region.length === 2) where.push(`((country = 'US' AND admin1 = ${sqlString(region)}) OR country = ${sqlString(region)})`);
+    else if (iso.length === 2) where.push(`country = ${sqlString(iso)}`);
+    const rows = toRows(await q(`SELECT name, admin1, country, lat, lon, population FROM places
+                                 WHERE ${where.join(" AND ")} ORDER BY population DESC LIMIT 8`));
+    if (!rows.length) {
+      throw new ToolError(`No populated place named "${place}" in the gazetteer (GeoNames, places of 1,000+ people). ` +
+        "Give lat and lon instead, or a nearby larger town.");
+    }
+    // Same name in different states or countries, with no hint: ask rather than guess.
+    const distinct = new Set(rows.map((r) => `${r.country}/${r.admin1}`));
+    if (!region && !iso && distinct.size > 1) {
+      const list = rows.map((r) => `${r.name}, ${r.country === "US" ? r.admin1 : r.country} (pop. ${r.population})`).join("; ");
+      throw new ToolError(`"${name}" is ambiguous: ${list}. Call again with the state or country, e.g. place: "${name}, ${rows[0].country === "US" ? rows[0].admin1 : rows[0].country}".`);
+    }
+    return rows[0];
+  }
+
+  async function resolveArea({ state, country, county, place, lat, lon, radius_km, stations: ids } = {}) {
     const where = [];
-    const hasPoint = Number.isFinite(lat) && Number.isFinite(lon);
+    const labels = [];
+    let point = null;
+    let resolved = null;
+    const st = state ? String(state).trim().toUpperCase() : "";
+    const ctry = country ? String(country).trim().toUpperCase() : "";
+
+    if (place) {
+      resolved = await resolvePlace(place, st, ctry);
+      point = { lat: resolved.lat, lon: resolved.lon };
+      labels.push(`${resolved.name}, ${resolved.country === "US" ? resolved.admin1 : resolved.country}`);
+    } else if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      point = { lat, lon };
+      labels.push(`${lat}, ${lon}`);
+    }
+    if (point) {
+      const r = Number.isFinite(radius_km) && radius_km > 0 ? Math.min(radius_km, 1000) : 50;
+      point.radius = r;
+      where.push(`${distanceSql(point)} <= ${r}`);
+      labels[labels.length - 1] = `within ${r} km of ${labels[labels.length - 1]}`;
+    }
+    if (county) {
+      if (!st) {
+        const states = toRows(await q(`SELECT DISTINCT state FROM stations WHERE lower(county) = lower(${sqlString(countyName(county))}) ORDER BY 1`));
+        throw new ToolError(`County names repeat across states; give the state too.${states.length ? ` "${countyName(county)}" exists in ${states.map((r) => r.state).join(", ")}.` : ""}`);
+      }
+      where.push(`s.state = ${sqlString(st)} AND lower(s.county) = lower(${sqlString(countyName(county))})`);
+      labels.push(`${countyName(county)} County, ${st}`);
+    } else if (!place) {
+      // With a place, state and country only pick which place is meant.
+      if (st) {
+        where.push(`s.state = ${sqlString(st)}`);
+        labels.push(st);
+      }
+      if (ctry) {
+        where.push(`s.country = ${sqlString(ctry)}`);
+        labels.push(ctry);
+      }
+    }
+    if (Array.isArray(ids) && ids.length) {
+      const list = ids.map((x) => String(x).trim().toUpperCase()).filter((x) => STATION_RE.test(x));
+      if (!list.length) throw new ToolError("stations must be 11-character station IDs.");
+      where.push(`s.id IN (${list.map(sqlString).join(", ")})`);
+      labels.push(`${list.length} listed stations`);
+    }
+    return { where, label: labels.join(", "), point, place: resolved };
+  }
+
+  const countyName = (c) => String(c).trim().replace(/\s+(county|parish|borough|census area|municipality)$/i, "");
+
+  // Haversine distance in km from a point to each station s.
+  const distanceSql = (p) =>
+    `2 * 6371 * asin(sqrt(pow(sin(radians(s.lat - ${p.lat}) / 2), 2) +
+       cos(radians(${p.lat})) * cos(radians(s.lat)) * pow(sin(radians(s.lon - ${p.lon}) / 2), 2)))`;
+
+  // ---- Tools --------------------------------------------------------------
+
+  async function findStations({ query, element, min_years, limit = 10, ...areaArgs } = {}) {
+    const area = await resolveArea(areaArgs);
+    const where = [...area.where];
     if (query) {
       const term = String(query).trim().toUpperCase();
       where.push(STATION_RE.test(term) ? `s.id = ${sqlString(term)}` : `s.name ILIKE ${sqlString("%" + term + "%")}`);
     }
-    if (state) where.push(`s.state = ${sqlString(String(state).toUpperCase())}`);
-    if (country) where.push(`s.country = ${sqlString(String(country).toUpperCase())}`);
     if (element) {
       const el = String(element).toUpperCase();
       if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${element}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
@@ -192,32 +290,32 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       where.push(`EXISTS (SELECT 1 FROM coverage c WHERE c.id = s.id AND c.element = ${sqlString(el)}
                   AND c.last_year - c.first_year + 1 >= ${minY})`);
     }
-    if (!where.length && !hasPoint) throw new ToolError("Give a name, station ID, state, country or lat/lon.");
-
-    // Haversine distance in km when a point is given.
-    const dist = hasPoint
-      ? `2 * 6371 * asin(sqrt(pow(sin(radians(s.lat - ${lat}) / 2), 2) +
-           cos(radians(${lat})) * cos(radians(s.lat)) * pow(sin(radians(s.lon - ${lon}) / 2), 2)))`
-      : "NULL";
-    const radius = Number.isFinite(radius_km) ? radius_km : 50;
+    if (!where.length) throw new ToolError("Give a name, station ID, state, county, country, place, or lat/lon.");
     const n = Math.min(Math.max(1, Math.floor(limit) || 10), 50);
     const sortEl = sqlString(element ? String(element).toUpperCase() : "PRCP");
+    const dist = area.point ? distanceSql(area.point) : "NULL";
 
-    const sql = `
-      WITH s AS (SELECT s.*, ${dist} AS distance_km FROM stations s
-                 ${where.length ? "WHERE " + where.join(" AND ") : ""})
-      SELECT s.id, s.name, s.state, s.country, round(s.lat, 4) AS lat, round(s.lon, 4) AS lon,
+    const base = `SELECT s.*, ${dist} AS distance_km FROM stations s WHERE ${where.join(" AND ")}`;
+    const total = toRows(await q(`SELECT count(*) AS n FROM (${base})`))[0].n;
+    const rows = toRows(await q(`
+      WITH s AS (${base})
+      SELECT s.id, s.name, s.state, s.county, s.country, round(s.lat, 4) AS lat, round(s.lon, 4) AS lon,
              s.elev_m, round(s.distance_km, 1) AS distance_km,
              (SELECT string_agg(c.element || ' ' || c.first_year || '-' || c.last_year, ', ' ORDER BY c.element)
                 FROM coverage c WHERE c.id = s.id) AS coverage
       FROM s
-      ${hasPoint ? `WHERE s.distance_km <= ${radius}` : ""}
-      ORDER BY ${hasPoint ? "s.distance_km," : ""}
+      ORDER BY ${area.point ? "s.distance_km," : ""}
                (SELECT max(c.last_year - c.first_year) FROM coverage c
                  WHERE c.id = s.id AND c.element = ${sortEl}) DESC NULLS LAST
-      LIMIT ${n}`;
-    const rows = toRows(await q(sql));
-    return { stations: rows, note: rows.length ? undefined : "No stations matched." };
+      LIMIT ${n}`));
+    return {
+      area: area.label || undefined,
+      place: area.place || undefined,
+      total_matching: total,
+      stations: rows,
+      note: !rows.length ? "No stations matched."
+        : total > rows.length ? `Showing ${rows.length} of ${total}. To analyze all of them on a day or period, use load_area with the same area.` : undefined,
+    };
   }
 
   async function loadSeries({ station, elements, start_year, end_year } = {}) {
@@ -308,7 +406,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       await q(`
         CREATE OR REPLACE TEMP TABLE _raw AS ${parts.join(" UNION ALL ")};
         INSERT INTO obs
-          SELECT ID, ${sqlString(p.el)}, strptime(DATE, '%Y%m%d')::DATE, DATA_VALUE::DOUBLE * ${scale}, M_FLAG
+          SELECT ID, ${sqlString(p.el)}, strptime(DATE, '%Y%m%d')::DATE, round(DATA_VALUE::DOUBLE * ${scale}, 1), M_FLAG, OBS_TIME
           FROM _raw WHERE Q_FLAG IS NULL;`);
       const s = toRows(await q(`
         SELECT count(*) FILTER (WHERE Q_FLAG IS NULL) AS days,
@@ -349,7 +447,112 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       state: meta?.state,
       results: summaries,
       downloaded_mb_this_session: Math.round(stats.bytes / 1e5) / 10,
-      table: "obs(station, element, date, value, m_flag)",
+      table: "obs(station, element, date, value, m_flag, obs_time)",
+    };
+  }
+
+  // Every station in an area for a short period, from by_year files. Those
+  // hold all stations for an element-year, so one download covers a whole
+  // state (or country) at once; this is the tool for "highest in Illinois on
+  // a date" questions, where loading stations one at a time misses most of them.
+  const MAX_AREA_DAYS = 366;
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  async function loadArea({ state, country, county, place, lat, lon, radius_km, stations: ids, elements, start_date, end_date } = {}) {
+    const start = String(start_date || "").trim();
+    const end = String(end_date || start).trim();
+    if (!DATE_RE.test(start) || !DATE_RE.test(end)) throw new ToolError("start_date and end_date must be YYYY-MM-DD.");
+    if (end < start) throw new ToolError("end_date is before start_date.");
+    const days = (Date.parse(end) - Date.parse(start)) / 864e5 + 1;
+    if (days > MAX_AREA_DAYS) {
+      throw new ToolError(`load_area covers at most ${MAX_AREA_DAYS} days; for long records at a few stations use load_series.`);
+    }
+    const els = (Array.isArray(elements) && elements.length ? elements : ["TMAX"]).map((e) => String(e).toUpperCase());
+    for (const el of els) {
+      if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${el}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
+    }
+
+    // The area, as a set of station IDs from the index.
+    const area = await resolveArea({ state, country, county, place, lat, lon, radius_km, stations: ids });
+    if (!area.where.length) throw new ToolError("Give a state, county (with state), country, place, lat/lon, or a list of stations.");
+    const label = area.label;
+    await q(`CREATE OR REPLACE TEMP TABLE _area AS SELECT s.id FROM stations s WHERE ${area.where.join(" AND ")}`);
+    const nArea = toRows(await q("SELECT count(*) AS n FROM _area"))[0].n;
+    if (!nArea) throw new ToolError(`No stations in the index match ${label}.`);
+
+    // Plan downloads: one element-year at a time, inside the per-call budget.
+    const y0 = Number(start.slice(0, 4));
+    const y1 = Number(end.slice(0, 4));
+    let bytes = 0;
+    const plan = [];
+    for (const el of els) {
+      const files = [];
+      for (let y = y0; y <= y1; y++) files.push(...(await listParquet(`parquet/by_year/YEAR=${y}/ELEMENT=${el}/`)));
+      bytes += files.filter((f) => !registered.has(f.key)).reduce((a, f) => a + f.size, 0);
+      plan.push({ el, files });
+    }
+    if (bytes / 1e6 > CONFIG.maxDownloadMBPerCall) {
+      throw new ToolError(`This would download about ${Math.round(bytes / 1e6)} MB (limit ${CONFIG.maxDownloadMBPerCall} MB per call). Use fewer elements or a shorter period.`);
+    }
+
+    const lo = start.replace(/-/g, "");
+    const hi = end.replace(/-/g, "");
+    const results = [];
+    for (const { el, files } of plan) {
+      if (!files.length) {
+        results.push({ element: el, loaded: false, reason: `NOAA has no ${el} files for ${y0}-${y1}.` });
+        continue;
+      }
+      const names = await fetchAll(files.map((f) => f.key));
+      await q(`
+        CREATE OR REPLACE TEMP TABLE _raw AS
+          SELECT ${RAW_COLS} FROM read_parquet(${fileList(names)}, hive_partitioning = false)
+          WHERE DATE BETWEEN '${lo}' AND '${hi}' AND ID IN (SELECT id FROM _area);
+        DELETE FROM obs WHERE element = ${sqlString(el)} AND date BETWEEN DATE '${start}' AND DATE '${end}'
+          AND station IN (SELECT id FROM _area);
+        INSERT INTO obs
+          SELECT ID, ${sqlString(el)}, strptime(DATE, '%Y%m%d')::DATE, round(DATA_VALUE::DOUBLE * ${ELEMENTS[el].scale}, 1), M_FLAG, OBS_TIME
+          FROM _raw WHERE Q_FLAG IS NULL;`);
+      const r = toRows(await q(`
+        SELECT count(DISTINCT ID) FILTER (WHERE Q_FLAG IS NULL) AS stations_reporting,
+               count(*) FILTER (WHERE Q_FLAG IS NULL) AS rows,
+               count(*) FILTER (WHERE Q_FLAG IS NOT NULL) AS qc_removed
+        FROM _raw`))[0];
+      await q("DROP TABLE _raw");
+      const summary = {
+        element: el,
+        units: ELEMENTS[el].units,
+        loaded: r.rows > 0,
+        stations_reporting: r.stations_reporting,
+        rows: r.rows,
+        qc_flagged_removed: r.qc_removed,
+      };
+      results.push(summary);
+      if (summary.loaded) {
+        loaded.set(`area:${label}/${el}/${start}/${end}`, {
+          kind: "area",
+          station: `${r.stations_reporting} ${r.stations_reporting === 1 ? "station" : "stations"} reporting`,
+          name: label,
+          element: el,
+          first_date: start,
+          last_date: end,
+          days_present_pct: Math.round((1000 * r.rows) / (r.stations_reporting * days)) / 10,
+          record_first: y0,
+          record_last: y1,
+        });
+      }
+    }
+    await q("DROP TABLE _area");
+    onActivity({ kind: "loaded", loaded: [...loaded.values()] });
+    return {
+      area: label,
+      place: area.place || undefined,
+      stations_in_index: nArea,
+      start_date: start,
+      end_date: end,
+      results,
+      downloaded_mb_this_session: Math.round(stats.bytes / 1e5) / 10,
+      table: "obs(station, element, date, value, m_flag, obs_time); join stations for names",
     };
   }
 
@@ -394,6 +597,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     db,
     findStations,
     loadSeries,
+    loadArea,
     runSql,
     select,
     stats: () => ({ ...stats }),

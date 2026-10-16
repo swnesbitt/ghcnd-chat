@@ -12,3 +12,9 @@ scripts/web-oauth), licensed under the Apache License, Version 2.0
 
 GHCN-Daily data: NOAA National Centers for Environmental Information, via the
 NOAA Open Data Dissemination program (s3://noaa-ghcn-pds).
+
+Place names and coordinates: GeoNames (https://www.geonames.org), cities1000,
+licensed under Creative Commons Attribution 4.0.
+
+US county boundaries: U.S. Census Bureau, 2023 Cartographic Boundary Files
+(cb_2023_us_county_500k).

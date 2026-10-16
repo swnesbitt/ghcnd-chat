@@ -25,7 +25,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE_FILES = ["index.html", "styles.css", "app.js", "agent.js", "ghcnd.js", "config.js",
-              "lumen-oauth.js", "station_index.parquet"]
+              "lumen-oauth.js", "station_index.parquet", "places.parquet"]
 MOCK = "http://localhost:5001"
 
 
@@ -102,23 +102,23 @@ def main() -> int:
 
             steps = page.eval_on_selector_all(".step summary", "s => s.map(x => x.textContent)")
             print("steps:", json.dumps(steps, indent=1))
-            if len(steps) < 9:
+            if len(steps) < 15:
                 print("LOG:", page.text_content("#log"), "\nBANNER:", page.text_content("#banner"))
                 print("CONSOLE:", "\n".join(console[-20:]))
                 return 1
-            check(len(steps) == 9, "nine tool steps shown")
-            check(not any(s.endswith("(failed)") for s in steps[:4]), "search, loads and query succeeded")
-            check(steps[4].endswith("(failed)") and steps[5].endswith("(failed)"), "forbidden SQL refused")
-            check(not steps[6].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
-            check(not steps[7].endswith("(failed)"), "histogram without y renders")
-            check(not steps[8].endswith("(failed)"), "chart step succeeded")
+            check(len(steps) == 15, "fifteen tool steps shown")
+            check(not any(s.endswith("(failed)") for s in steps[:6]), "search, loads, area load and queries succeeded")
+            check(steps[6].endswith("(failed)") and steps[7].endswith("(failed)"), "forbidden SQL refused")
+            check(not steps[8].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
+            check(not steps[9].endswith("(failed)"), "histogram without y renders")
+            check(not steps[10].endswith("(failed)"), "chart step succeeded")
             n_marks = page.locator(".chart svg.marks, .chart canvas.marks").count()
             if n_marks != 3:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
             check(n_marks == 3, "all three charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
-            check(page.locator("#records li:not(.axis)").count() == 3, "rail shows three loaded series")
+            check(page.locator("#records li:not(.axis)").count() == 5, "rail shows three series and two area loads")
             print("downloaded:", page.text_content("#downloaded"))
 
             # What the model saw from each tool.
@@ -126,6 +126,21 @@ def main() -> int:
             last = reqs[-1]["messages"]
             check(reqs[-1]["messages"][0]["role"] == "system", "system prompt sent")
             check("Today is" in reqs[-1]["messages"][0]["content"], "system prompt carries today's date")
+            tool_out = [m["content"] for m in last if m["role"] == "tool"]
+            area = json.loads(tool_out[3])
+            print("area load:", json.dumps(area)[:400])
+            check(area["results"][0]["stations_reporting"] >= 100, "load_area loaded 100+ Illinois stations")
+            check("USC00117551" in tool_out[4] and "14.4" in tool_out[4], "Illinois max on 1974-04-05 is Rushville, 14.4 C")
+            check("ambiguous" in tool_out[11] and "AZ" in tool_out[11], "bare 'Peoria' is refused as ambiguous")
+            peoria = json.loads(tool_out[12])
+            print("Peoria:", peoria.get("place"), peoria.get("total_matching"), [x["name"] for x in peoria["stations"][:4]])
+            check(peoria["place"]["admin1"] == "IL" and peoria["total_matching"] > 0
+                  and all(x["distance_km"] <= 30 for x in peoria["stations"]), "Peoria, IL resolves and stays within 30 km")
+            champ = json.loads(tool_out[13])
+            check(any(x["id"] == "USC00118740" for x in champ["stations"]), "Champaign County, IL includes Champaign 3S")
+            schuyler = json.loads(tool_out[14])
+            print("Schuyler:", json.dumps(schuyler)[:300])
+            check(schuyler["results"][0]["stations_reporting"] >= 1, "county load_area works")
             hist = page.evaluate("[...document.querySelectorAll('.chart')][1].querySelector('svg.marks').textContent")
             check("Count" in hist, "histogram got a count axis")
             check(all("reasoning_content" not in m for m in last), "reasoning fields stripped")

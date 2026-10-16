@@ -9,9 +9,9 @@ runs in the user's browser:
   for this page; the page never sees a password and never needs a shared key.
 - **DuckDB-WASM** reads NOAA's parquet files straight from the public bucket
   (`s3://noaa-ghcn-pds/parquet/`), which allows cross-origin reads.
-- **The agent loop** runs in the page: the model calls four tools (find stations,
-  load a series, run SQL, draw a chart), the page runs them and sends back the
-  results. Lumen forwards `tools` and `tool_choice` to the model backend.
+- **The agent loop** runs in the page: the model calls five tools (find stations,
+  load a long series at a station, load every station in an area for a period,
+  run SQL, draw a chart), the page runs them and sends back the results. Lumen forwards `tools` and `tool_choice` to the model backend.
 
 ```
 browser ──PKCE──► Lumen ──► model (tool calling)
@@ -30,7 +30,7 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 | `agent.js` | System prompt, tool schemas, the tool-calling loop |
 | `ghcnd.js` | DuckDB-WASM session, station search, the series loader, SQL guard |
 | `lumen-oauth.js` | Copied unchanged from `ncsa/lumen` `scripts/web-oauth` (Apache-2.0, see `NOTICE`) |
-| `scripts/build_station_index.py` | Builds `station_index.parquet` (about 4 MB) from NOAA's station and inventory files |
+| `scripts/build_station_index.py` | Builds `station_index.parquet` (about 4 MB: NOAA's station and inventory files plus each US station's county) and `places.parquet` (about 4 MB: GeoNames places of 1,000+ people, loaded only when a question names a place) |
 | `.github/workflows/pages.yml` | Rebuilds the index daily and deploys to GitHub Pages |
 | `test/` | Headless-Chrome end-to-end test with a scripted mock Lumen |
 
@@ -113,6 +113,21 @@ others (Chicago O'Hare, `USW00094846`). `load_series` therefore:
 
 Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
 (the count is reported to the model).
+
+## Areas
+
+`find_stations` and `load_area` accept the same areas:
+
+- a place with a radius, `"Peoria, IL"` with `radius_km` (default 50); a bare name
+  that exists in several states or countries is refused with the candidates;
+- a latitude and longitude with a radius;
+- a state, a US county with its state, or a country;
+- a list of station IDs.
+
+`load_area` loads every station in the area for up to a year from the `by_year`
+files, so a statewide question ("the highest temperature in Illinois on 4/5/1974")
+costs one element-year download (about 19 MB for 1974 TMAX) and covers all 107
+Illinois stations that reported that day.
 
 ## Security
 

@@ -1,4 +1,5 @@
 station_index.parquet
+places.parquet
 test/out/
 requests.jsonl
 __pycache__/

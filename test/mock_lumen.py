@@ -16,6 +16,12 @@ SCRIPT = [
     ("load_series", {"station": "USC00118740", "elements": ["PRCP", "TMAX"], "start_year": 1990}),
     # O'Hare's by_station files stopped in February 2025, so this exercises the by_year tail.
     ("load_series", {"station": "USW00094846", "elements": ["PRCP"], "start_year": 2020}),
+    # Every Illinois station on one day, from the 1974 TMAX by_year files.
+    ("load_area", {"state": "IL", "elements": ["TMAX"], "start_date": "1974-04-05"}),
+    ("run_sql", {"query": """SELECT o.station, s.name, o.value AS tmax_c, o.obs_time FROM obs o
+                             JOIN stations s ON s.id = o.station
+                             WHERE o.element = 'TMAX' AND o.date = DATE '1974-04-05' AND s.state = 'IL'
+                             ORDER BY o.value DESC LIMIT 5"""}),
     ("run_sql", {"query": """
         WITH y AS (
           SELECT year(date) AS year, count(*) AS days, sum(value) AS total_mm
@@ -55,6 +61,11 @@ SCRIPT = [
             "data": {"url": "https://example.com/should-be-stripped.json"},
         },
     }),
+    # Places and counties.
+    ("find_stations", {"place": "Peoria", "element": "TMAX"}),                          # ambiguous: AZ and IL
+    ("find_stations", {"place": "Peoria, IL", "radius_km": 30, "element": "TMAX"}),
+    ("find_stations", {"county": "Champaign County", "state": "IL", "limit": 50}),
+    ("load_area", {"county": "Schuyler", "state": "IL", "elements": ["TMAX"], "start_date": "1974-04-05"}),
 ]
 
 FINAL = """The wettest years at **CHAMPAIGN 3S** (`USC00118740`) since 1990, counting only years with at least 90% of days present:

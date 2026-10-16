@@ -7,22 +7,25 @@ import { CONFIG } from "./config.js";
 export const SYSTEM_PROMPT = `You help a meteorologist explore NOAA GHCN-Daily (GHCNd) station observations. You work only through the tools below, which run DuckDB in the user's browser over NOAA's public GHCNd data.
 
 How to work:
-1. find_stations to identify stations. Names repeat across states and countries (several stations are named URBANA, in different states). When the place the user means is ambiguous, list the candidates (ID, name, state, coverage) and ask; when one clearly matches, say which one you chose.
-2. load_series to load daily values for the chosen station(s) and elements into the table obs.
+1. find_stations to identify stations, by name, or by area: a place ("Peoria, IL") with radius_km, a lat/lon with radius_km, a state, a US county with its state, or a country. Names repeat across states and countries (several stations are named URBANA, in different states). When the place the user means is ambiguous, list the candidates (ID, name, state, coverage) and ask; when one clearly matches, say which one you chose.
+2. Load data into the table obs:
+   - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
+   - load_series for long records at one or a few stations (trends, climatologies, records at a site).
 3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
 4. make_chart when a picture helps, with a Vega-Lite spec. The data comes from the chart's own SQL; do not put data or URLs in the spec.
 
 Tables:
-- stations(id, name, state, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID
+- stations(id, name, state, county, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID; county is the US county
 - coverage(id, element, first_year, last_year)
 - elements(element, units, description)
-- obs(station, element, date DATE, value DOUBLE, m_flag) — only what load_series has loaded; values that failed NOAA quality control are already removed
+- obs(station, element, date DATE, value DOUBLE, m_flag, obs_time) — only what load_series and load_area have loaded; values that failed NOAA quality control are already removed; join stations on obs.station = stations.id for names
 
 Data rules:
 - Units in obs: PRCP, SNOW, SNWD in mm; TMAX, TMIN, TAVG in °C. Convert to inches or °F only when the user asks or clearly expects US units.
 - obs can hold several stations and elements at once; always filter by station and element.
 - A missing day is missing, not zero. For monthly, seasonal or annual totals and means, count the days present and exclude or flag periods with poor coverage (say what threshold you used, e.g., 90% of days).
 - m_flag 'T' marks trace precipitation, stored as 0.
+- Cooperative observers report the max and min for the 24 hours ending at obs_time (e.g., '0700'); with a morning obs_time, much of a day's TMAX belongs to the previous afternoon. Mention this when ranking one day's extremes across stations.
 - TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
 - NOAA updates the data daily; the latest days may be incomplete.
 
@@ -47,11 +50,13 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "find_stations",
       description:
-        "Search the GHCN-Daily station index by name, ID, state, country, or distance from a point. Returns IDs, locations and period of record per element.",
+        "Search the GHCN-Daily station index by name or ID, and/or by area: a place with radius_km, a lat/lon with radius_km, a state, a US county with its state, or a country. Returns up to `limit` stations with locations and period of record per element, plus total_matching.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string", description: "Part of the station name (e.g., 'CHAMPAIGN') or an exact 11-character station ID" },
+          place: { type: "string", description: "Town or city, best with its state or ISO country: 'Peoria, IL', 'Cordoba, AR'. Searches radius_km around it." },
+          county: { type: "string", description: "US county name, with state, e.g., county 'Champaign' and state 'IL'" },
           state: { type: "string", description: "US state or Canadian province code, e.g., 'IL'" },
           country: { type: "string", description: "2-letter FIPS country code (first two characters of the ID), e.g., 'US', 'AR'" },
           lat: { type: "number" },
@@ -83,6 +88,34 @@ export const TOOL_SCHEMAS = [
           end_year: { type: "number" },
         },
         required: ["station"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_area",
+      description:
+        "Load every station in an area for a period of up to one year into table obs, from NOAA's files that hold all stations for an element-year. The area is a place with radius_km ('Peoria, IL', 50), a lat/lon with radius_km, a state, a US county with its state, a country, or a list of station IDs. Use this for 'highest/lowest/most in <area> on <date>' and other many-station questions.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: { type: "string", description: "Town or city, best with its state or ISO country: 'Peoria, IL', 'Cordoba, AR'. Searches radius_km around it." },
+          county: { type: "string", description: "US county name, with state, e.g., county 'Champaign' and state 'IL'" },
+          state: { type: "string", description: "US state or Canadian province code, e.g., 'IL'" },
+          country: { type: "string", description: "2-letter FIPS country code, e.g., 'US'" },
+          lat: { type: "number" },
+          lon: { type: "number" },
+          radius_km: { type: "number", description: "Radius around lat/lon; default 50" },
+          stations: { type: "array", items: { type: "string" }, description: "Explicit station IDs instead of an area" },
+          elements: {
+            type: "array",
+            items: { type: "string", enum: ["PRCP", "SNOW", "SNWD", "TMAX", "TMIN", "TAVG"] },
+          },
+          start_date: { type: "string", description: "YYYY-MM-DD" },
+          end_date: { type: "string", description: "YYYY-MM-DD; defaults to start_date" },
+        },
+        required: ["elements", "start_date"],
       },
     },
   },

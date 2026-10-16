@@ -20,6 +20,8 @@ export const CONFIG = {
 
   // Station index built by scripts/build_station_index.py, served next to this page.
   stationIndexUrl: "station_index.parquet",
+  // Gazetteer (GeoNames cities1000), loaded the first time a question names a place.
+  placesUrl: "places.parquet",
 
   // Guard rails for the browser. by_year files cannot be filtered by station
   // before download, so a station with no by_station history (or a request
@@ -27,5 +29,5 @@ export const CONFIG = {
   maxDownloadMBPerCall: 250,
   maxSqlRows: 200,
   maxChartRows: 20000,
-  maxToolSteps: 12,
+  maxToolSteps: 20,
 };

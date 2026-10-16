@@ -168,7 +168,9 @@ function renderRecords(list) {
         bar,
         el("div", {
           className: "meta",
-          textContent: `${r.first_date.slice(0, 4)}–${r.last_date.slice(0, 4)} loaded, ${r.days_present_pct}% of days present`,
+          textContent: r.kind === "area"
+            ? (r.first_date === r.last_date ? r.first_date : `${r.first_date} to ${r.last_date}`)
+            : `${r.first_date.slice(0, 4)}–${r.last_date.slice(0, 4)} loaded, ${r.days_present_pct}% of days present`,
         })
       )
     );
@@ -204,16 +206,30 @@ function addError(text) {
   scrollToEnd();
 }
 
+function areaLabel(a = {}) {
+  const r = a.radius_km ?? 50;
+  if (a.place) return `within ${r} km of ${a.place}`;
+  if (Number.isFinite(a.lat)) return `within ${r} km of ${a.lat}, ${a.lon}`;
+  if (a.county) return `in ${a.county} County${a.state ? `, ${a.state}` : ""}`;
+  if (a.state) return `in ${a.state}`;
+  if (a.country) return `in ${a.country}`;
+  if (a.stations?.length) return `(${a.stations.length} listed)`;
+  return "";
+}
+
 function stepLabel(name, args = {}) {
   switch (name) {
     case "find_stations": {
-      const where = [args.query && `“${args.query}”`, args.state && `in ${args.state}`,
-        Number.isFinite(args.lat) && `near ${args.lat}, ${args.lon}`].filter(Boolean).join(" ");
+      const where = [args.query && `“${args.query}”`, areaLabel(args)].filter(Boolean).join(" ");
       return `Searched stations ${where}`.trim();
     }
     case "load_series": {
       const years = args.start_year || args.end_year ? ` ${args.start_year ?? "start"}–${args.end_year ?? "now"}` : "";
       return `Loaded ${args.station} ${(args.elements || ["PRCP"]).join(", ")}${years}`;
+    }
+    case "load_area": {
+      const when = args.end_date && args.end_date !== args.start_date ? `${args.start_date} to ${args.end_date}` : args.start_date;
+      return `Loaded all stations ${areaLabel(args) || ""}, ${(args.elements || ["TMAX"]).join(", ")}, ${when}`;
     }
     case "run_sql": return "Ran a query";
     case "make_chart": return args.title ? `Drew a chart: ${args.title}` : "Drew a chart";
@@ -473,6 +489,7 @@ async function ask(text) {
     const handlers = {
       find_stations: (a) => g.findStations(a),
       load_series: (a) => g.loadSeries(a),
+      load_area: (a) => g.loadArea(a),
       run_sql: (a) => g.runSql(a),
       make_chart: (a) => makeChart(a),
     };
