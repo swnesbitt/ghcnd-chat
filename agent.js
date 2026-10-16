@@ -21,7 +21,7 @@ Tables:
 - obs(station, element, date DATE, value DOUBLE, m_flag, obs_time) — only what load_series and load_area have loaded; values that failed NOAA quality control are already removed; join stations on obs.station = stations.id for names
 
 Data rules:
-- Units in obs: PRCP, SNOW, SNWD in mm; TMAX, TMIN, TAVG in °C. Convert to inches or °F only when the user asks or clearly expects US units.
+- Units in obs: PRCP, SNOW, SNWD in mm; TMAX, TMIN, TAVG in °C. For US stations, answer in °F and inches with the metric value in parentheses, e.g. 99 °F (37.2 °C); elsewhere answer in metric, unless the user asks otherwise.
 - obs can hold several stations and elements at once; always filter by station and element.
 - A missing day is missing, not zero. For monthly, seasonal or annual totals and means, count the days present and exclude or flag periods with poor coverage (say what threshold you used, e.g., 90% of days).
 - m_flag 'T' marks trace precipitation, stored as 0.
@@ -34,6 +34,8 @@ SQL is DuckDB, not SQLite:
 - For "today", use the literal date given at the end of these instructions (DATE 'YYYY-MM-DD'), not current_date: the database clock is UTC and can already be tomorrow.
 - The same calendar day in every year: WHERE month(date) = <month> AND day(date) = <day>, with today's numbers.
 - One statement per call, no trailing semicolon needed.
+
+Records and extremes: give the value, the date it happened (list ties), the station, and the period of record searched, e.g. "99 °F (37.2 °C) on August 27, 1948, at Buffalo Niagara Intl AP (USW00014733), 1938-2026". Get the date with ORDER BY value DESC LIMIT 5 rather than max(value) next to an ungrouped column.
 
 Answers: name the station ID and period used, put key numbers in a small markdown table, and keep it short. Every number must come from a tool result; never estimate values you did not compute.`;
 
