@@ -4,6 +4,7 @@ import { createLumenClient, LumenError } from "./lumen-oauth.js";
 import { CONFIG } from "./config.js";
 import { runTurn } from "./agent.js";
 import { cleanModelText } from "./format.js";
+import { initAlmanac, renderAlmanac, findNearby } from "./almanac.js";
 import { marked } from "https://cdn.jsdelivr.net/npm/marked@18.1.1/+esm";
 import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.4.17/+esm";
 
@@ -620,7 +621,7 @@ function fixAxes(spec, rows) {
         if (free && v.every((x) => typeof x === "string" && ISO_DATE.test(x))) {
           enc.type = "temporal";
           enc.scale = { type: "utc", ...(enc.scale || {}) };
-          if (enc.axis !== null) enc.axis = { format: "%Y-%m-%d", formatType: "utc", ...(enc.axis || {}) };
+          if (enc.axis !== null) enc.axis = { format: "%b %-d, %Y", ...(enc.axis || {}) };
           continue;
         }
         const numeric = v.every((x) => typeof x === "number");
@@ -716,6 +717,24 @@ async function makeChart(args) {
   charts.push(draw);
   scrollToEnd();
   return { ok: true, rows: rows.length, truncated, note: "The chart is shown to the user." };
+}
+
+// Shared chart drawing for the almanac (same libraries and theme as make_chart).
+async function embedChart(node, spec) {
+  vegaPromise ||= Promise.all([
+    import("https://cdn.jsdelivr.net/npm/vega-embed@7.3.0/+esm"),
+    import("https://cdn.jsdelivr.net/npm/vega-interpreter@2.3.2/+esm"),
+  ]);
+  const [{ default: embed }, { expressionInterpreter }] = await vegaPromise;
+  const full = { $schema: "https://vega.github.io/schema/vega-lite/v6.json", ...spec };
+  const draw = () => embed(node, full, {
+    ast: true,
+    expr: expressionInterpreter,
+    config: chartConfig(),
+    actions: { export: true, source: false, compiled: false, editor: false },
+  });
+  await draw();
+  charts.push(draw);
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +844,155 @@ for (const b of document.querySelectorAll(".examples button")) {
 }
 
 // ---------------------------------------------------------------------------
+// Tabs: GHCN chat and Climate at a glance
+
+const TABS = ["chat", "almanac"];
+
+function selectTab(name, { focus = false } = {}) {
+  for (const t of TABS) {
+    const tab = $(`tab-${t}`);
+    const on = t === name;
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+    $(`panel-${t}`).hidden = !on;
+    if (on && focus) tab.focus();
+  }
+  if (name === "chat" && location.search) history.replaceState(null, "", location.pathname + location.hash);
+}
+
+for (const t of TABS) {
+  $(`tab-${t}`).addEventListener("click", () => selectTab(t));
+  $(`tab-${t}`).addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const i = TABS.indexOf(t);
+    selectTab(TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length], { focus: true });
+  });
+}
+
+initAlmanac({
+  startData,
+  lumen,
+  getModel: () => $("model").value || CONFIG.preferredModel,
+  embedChart,
+  renderMarkdown: (t) => DOMPurify.sanitize(marked.parse(cleanModelText(t))),
+  logEvent,
+});
+
+let almanacRunning = false;
+async function showAlmanac(query, asOf = null) {
+  if (almanacRunning || !query.trim()) return;
+  almanacRunning = true;
+  const out = $("alm-out");
+  const setAlmStatus = (t) => ($("alm-status").textContent = t);
+  logbook.turn = { question: `Almanac for ${query}`, started: new Date().toISOString(), entries: [] };
+  $("alm-form").querySelector("button").disabled = true;
+  try {
+    const r = await renderAlmanac(out, query, { onStatus: setAlmStatus, asOf });
+    const station = r.station;
+    history.replaceState(null, "", `${location.pathname}?station=${station.id}${r.asOf ? `&date=${r.asOf}` : ""}`);
+    document.title = `${station.name} almanac | GHCN-Daily Chat`;
+  } catch (err) {
+    setAlmStatus("");
+    logEvent("almanac failed", err?.stack || err?.message || String(err));
+    out.replaceChildren(el("div", { className: "error-block" },
+      el("p", { className: "error-text", textContent: err.message || String(err) }), copyLogButton()));
+  } finally {
+    almanacRunning = false;
+    $("alm-form").querySelector("button").disabled = false;
+  }
+}
+
+// A place name lists the nearest stations (3 at first, "More stations" for
+// the rest) and starts the almanac on the best long-record one; picking
+// another station in the list switches to it. A station ID skips the list.
+const STATION_ID = /^[A-Z0-9]{11}$/i;
+
+function renderChoices(near, selected) {
+  const box = $("alm-choices");
+  const us = near.place?.country === "US" || near.stations[0]?.country === "US";
+  const dist = (km) => (us ? `${(km * 0.6214).toFixed(km < 16 ? 1 : 0)} mi` : `${km.toFixed(km < 10 ? 1 : 0)} km`);
+  const span = (c, name) => (c ? `${name} ${c.first}–${c.last}` : null);
+  // The recommended station first, then the rest by distance.
+  const rec = near.stations.find((st) => st.id === near.recommended);
+  const ordered = [rec, ...near.stations.filter((st) => st.id !== near.recommended)].filter(Boolean);
+  const thisYear = new Date().getFullYear();
+  let shown = Math.min(4, ordered.length);
+  const list = el("ol", { className: "alm-stations" });
+  const more = el("button", { type: "button", className: "quiet", textContent: "More stations" });
+  const draw = () => {
+    list.replaceChildren(...ordered.slice(0, shown).map((st) => {
+      const isSel = st.id === selected;
+      const last = Math.max(...Object.values(st.cov).map((c) => c.last || 0));
+      const cov = ([span(st.cov.TMAX, "Temperature"), span(st.cov.PRCP, "Precipitation"), span(st.cov.SNOW, "Snow")].filter(Boolean).join(", ") || "No temperature or precipitation record")
+        + (last && last < thisYear - 1 ? " (no longer reporting)" : "");
+      const btn = el("button", { type: "button", className: "alm-station" },
+        el("span", { className: "alm-st-name", textContent: `${st.name}${st.state ? `, ${st.state}` : ""}` }),
+        el("span", { className: "alm-st-meta", textContent: `${st.id}, ${dist(st.distance_km)} away` }),
+        el("span", { className: "alm-st-cov", textContent: cov }),
+        isSel ? el("span", { className: "alm-st-sel", textContent: st.id === near.recommended ? "Selected: the nearest long, current record" : "Selected" }) : st.id === near.recommended ? el("span", { className: "alm-st-meta", textContent: "Recommended: the nearest long, current record" }) : null);
+      if (isSel) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", () => {
+        if (almanacRunning || st.id === selected) return;
+        selected = st.id;
+        draw();
+        showAlmanac(st.id);
+      });
+      return el("li", {}, btn);
+    }));
+    more.hidden = shown >= ordered.length;
+  };
+  more.addEventListener("click", () => {
+    shown = Math.min(shown + 7, ordered.length);
+    draw();
+    list.children[Math.min(shown - 7, list.children.length - 1)]?.querySelector("button")?.focus();
+  });
+  draw();
+  const placeName = near.place ? `${near.place.name}, ${near.place.country === "US" ? near.place.admin1 : near.place.country}` : "here";
+  box.replaceChildren(el("h2", { id: "alm-choices-h", textContent: `Stations near ${placeName}` }),
+    el("p", { className: "fine", textContent: "The almanac uses the nearest station with a long, current temperature and precipitation record. Pick another to switch." }), list, more);
+  box.hidden = false;
+}
+
+async function startAlmanac(query, asOf = null) {
+  const q = String(query || "").trim();
+  if (!q || almanacRunning) return;
+  if (STATION_ID.test(q)) {
+    $("alm-choices").hidden = true;
+    return showAlmanac(q.toUpperCase(), asOf);
+  }
+  $("alm-status").textContent = "Finding stations";
+  try {
+    const near = await findNearby(q);
+    renderChoices(near, near.recommended);
+    return showAlmanac(near.recommended, asOf);
+  } catch (err) {
+    $("alm-status").textContent = "";
+    $("alm-choices").hidden = true;
+    logEvent("almanac failed", err?.message || String(err));
+    $("alm-out").replaceChildren(el("div", { className: "error-block" },
+      el("p", { className: "error-text", textContent: err.message || String(err) }), copyLogButton()));
+  }
+}
+
+$("alm-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  startAlmanac($("alm-input").value);
+});
+
+// ?station=USC00118740, ?id=..., or ?place=Champaign, IL open the almanac directly.
+function almanacFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const q = p.get("station") || p.get("id") || p.get("place");
+  if (!q && location.hash !== "#almanac") return false;
+  selectTab("almanac");
+  if (q) {
+    $("alm-input").value = q;
+    startAlmanac(q, p.get("date"));
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Start-up
 
 (async () => {
@@ -833,6 +1001,7 @@ for (const b of document.querySelectorAll(".examples button")) {
   } catch (err) {
     showBanner(err.message);
   }
+  almanacFromUrl();
   if (lumen.getKey()) await showApp();
   else showConnect();
 })();

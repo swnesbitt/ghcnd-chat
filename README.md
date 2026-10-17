@@ -9,7 +9,9 @@ runs in the user's browser:
   for this page; the page never sees a password and never needs a shared key.
 - **DuckDB-WASM** reads NOAA's parquet files straight from the public bucket
   (`s3://noaa-ghcn-pds/parquet/`), which allows cross-origin reads.
-- **The agent loop** runs in the page: the model calls five tools (find stations,
+- **The agent loop** runs in the page: the model calls seven tools (find stations,
+  load a station's series, load an area, load records, get the NWS forecast, run SQL,
+  draw a chart). Previously five (find stations,
   load a long series at a station, load every station in an area for a period,
   run SQL, draw a chart), the page runs them and sends back the results. Lumen forwards `tools` and `tool_choice` to the model backend.
 
@@ -33,7 +35,8 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 | `lumen-oauth.js` | Copied unchanged from `ncsa/lumen` `scripts/web-oauth` (Apache-2.0, see `NOTICE`) |
 | `scripts/build_station_index.py` | Builds `station_index.parquet` (about 4 MB: NOAA's station and inventory files plus each US station's county) and `places.parquet` (about 4 MB: GeoNames places of 1,000+ people, loaded only when a question names a place) |
 | `.github/workflows/pages.yml` | Rebuilds the index daily and deploys to GitHub Pages |
-| `test/` | Headless-Chrome end-to-end test with a scripted mock Lumen |
+| `almanac.js` | The Climate at a glance tab |
+| `test/` | Headless-Chrome end-to-end tests (`run_browser_test.py` for chat, `run_almanac_test.py` for the almanac) with a scripted mock Lumen |
 
 ## Configure
 
@@ -114,6 +117,40 @@ others (Chicago O'Hare, `USW00094846`). `load_series` therefore:
 
 Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
 (the count is reported to the model).
+
+## Climate at a glance
+
+The second tab is an almanac for one station. Enter a GHCN-Daily ID, or a place:
+a place lists the nearest stations with their periods of record and starts on
+the nearest one with a long, current temperature and precipitation record.
+Link to one directly with `?station=USC00118740` or `?place=Champaign, IL`, and
+add `&date=2026-01-25` for an almanac as of a past date (observations only).
+
+Sections, each with a blue box of text:
+
+- **Yesterday and today**: the latest report and today's NWS forecast against
+  the 1991–2020 normal and the station's record for the date, with a note when
+  a morning observer's high belongs to the previous afternoon.
+- **The past 5 days and the next 5**: highs and lows against normals and
+  records, classified by percentile of the station's 1991–2020 values within a
+  week of the date.
+- **The past year**: daily temperature departures, cumulative precipitation
+  against normal, month by month, and snowfall for October 1 to April 15.
+- **One of four seasonal stories**: the spring frost tracker (Mar 1 – Jun 10),
+  "How hot is this summer?" (Jun 11 – Aug 31), the fall frost tracker
+  (Sep 1 – Dec 10) and "How cold is this winter?" (Dec 11 – Feb). The frost
+  trackers use NOAA's 10/50/90% dates, show the forecast lows, flag a forecast
+  low within 3°F of a threshold as possible, and say how early or late a date
+  is against the station's 1991–2020 seasons. The season stories rank the season
+  so far against the same dates in every year on record.
+- **Degree days this year**: growing (base 50°F, capped at 86°F), heating and
+  cooling (base 65°F) degree days against normal.
+
+Normals are NOAA's 1991–2020 U.S. Climate Normals from NCEI where the station
+has them, otherwise computed from the station's own 1991–2020 data (smoothed).
+Everything numeric is computed in the page; the model writes only the text in
+the boxes, from a summary of those numbers. Signed out, the boxes get plain
+templated text.
 
 ## Areas
 

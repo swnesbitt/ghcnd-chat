@@ -53,7 +53,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir _site
-          cp -r index.html styles.css app.js agent.js ghcnd.js format.js config.js lumen-oauth.js station_index.parquet places.parquet img geo _site/
+          cp -r index.html styles.css app.js agent.js ghcnd.js format.js almanac.js config.js lumen-oauth.js station_index.parquet places.parquet img geo _site/
           if [ -d records ]; then cp -r records _site/; fi
           echo "{\"commit\": \"${GITHUB_SHA::7}\", \"built_at\": \"$(date -u +%Y-%m-%dT%H:%MZ)\"}" > _site/version.json
 

@@ -157,7 +157,10 @@ class Handler(BaseHTTPRequestHandler):
         last_user = max(i for i, m in enumerate(msgs) if m["role"] == "user")
         n_tools = sum(1 for m in msgs[last_user:] if m["role"] == "tool")
         if not body.get("tools"):
-            return self.reply(400, {"error": {"message": "expected tools"}})
+            # The almanac asks for its text boxes as JSON, without tools.
+            text = json.dumps({k: f"MOCK-NARRATIVE {k}: written from the numbers given." for k in
+                               ("now", "outlook", "past_year", "frost", "degree_days")})
+            return self.reply(200, {"choices": [{"index": 0, "message": {"role": "assistant", "content": "```json\n" + text + "\n```"}}]})
         if n_tools < len(SCRIPT):
             name, args = SCRIPT[n_tools]
             msg = {"role": "assistant", "content": None, "reasoning_content": "scripted",

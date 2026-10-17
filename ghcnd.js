@@ -797,6 +797,8 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     loadArea,
     loadRecords,
     getForecast,
+    // Unguarded SQL for the page's own code (the almanac); never exposed to the model.
+    sql: async (text) => toRows(await q(text)),
     runSql,
     select,
     stats: () => ({ ...stats }),

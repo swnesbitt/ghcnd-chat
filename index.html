@@ -8,8 +8,8 @@
     (and DuckDB's worker, which inherits this policy) from sending anything to
     hosts other than Lumen, the NOAA bucket, the CDN, DuckDB's extension server
     (DuckDB-WASM fetches its parquet reader from there on first use), the
-    Illinois brand API (the campus footer loads its links from there) and the
-    National Weather Service API (forecasts). Put your
+    Illinois brand API (the campus footer loads its links from there), the
+    National Weather Service API (forecasts) and NCEI (1991-2020 normals). Put your
     Lumen origin here; it must match lumenBaseUrl in config.js. For local
     development with Lumen on http://localhost:5001, add that origin too.
   -->
@@ -17,7 +17,7 @@
     default-src 'self';
     script-src 'self' https://cdn.jsdelivr.net https://cdn.toolkit.illinois.edu 'wasm-unsafe-eval';
     worker-src 'self' blob:;
-    connect-src 'self' https://lumen.computes.illinois.edu https://noaa-ghcn-pds.s3.amazonaws.com https://api.weather.gov https://cdn.jsdelivr.net https://extensions.duckdb.org https://api.brand.illinois.edu;
+    connect-src 'self' https://lumen.computes.illinois.edu https://noaa-ghcn-pds.s3.amazonaws.com https://api.weather.gov https://www.ncei.noaa.gov https://cdn.jsdelivr.net https://extensions.duckdb.org https://api.brand.illinois.edu;
     img-src 'self' data: blob: https://cdn.toolkit.illinois.edu https://cdn.brand.illinois.edu;
     style-src 'self' 'unsafe-inline' https://cdn.toolkit.illinois.edu https://cdn.brand.illinois.edu https://fonts.googleapis.com;
     font-src 'self' data: https://fonts.gstatic.com https://cdn.brand.illinois.edu https://cdn.toolkit.illinois.edu;
@@ -40,8 +40,14 @@
     </nav>
   </ilw-header>
 
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-chat" aria-controls="panel-chat" aria-selected="true">GHCN chat</button>
+    <button type="button" role="tab" id="tab-almanac" aria-controls="panel-almanac" aria-selected="false" tabindex="-1">Climate at a glance</button>
+  </nav>
+
   <p id="banner" class="banner" role="alert" hidden></p>
 
+  <div id="panel-chat" role="tabpanel" aria-labelledby="tab-chat">
   <main id="connect-view" class="connect" hidden>
     <h1>Ask questions of more than a century of daily weather observations.</h1>
     <p>
@@ -101,6 +107,25 @@
         <ol id="records" class="records"></ol>
         <p id="downloaded" class="fine downloaded"></p>
       </aside>
+    </div>
+  </div>
+
+  </div>
+
+  <div id="panel-almanac" role="tabpanel" aria-labelledby="tab-almanac" hidden>
+    <div class="almanac">
+      <form id="alm-form" class="alm-form">
+        <label for="alm-input">Station, place or GHCN-Daily ID</label>
+        <div class="alm-row">
+          <input id="alm-input" type="text" autocomplete="off" placeholder="Champaign, IL or USC00118740">
+          <button type="submit" class="primary">Show almanac</button>
+        </div>
+      </form>
+      <section id="alm-choices" class="alm-choices" aria-labelledby="alm-choices-h" hidden></section>
+      <p id="alm-status" class="status" aria-live="polite"></p>
+      <div id="alm-out" aria-live="polite">
+        <p class="fine">An almanac for any GHCN-Daily station: the latest observations and the forecast against normals and records, the past year, frost and freeze dates, and degree days. Link to one directly with <code>?station=USC00118740</code> or <code>?place=Champaign, IL</code>.</p>
+      </div>
     </div>
   </div>
 
