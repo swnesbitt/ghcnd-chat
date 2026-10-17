@@ -159,6 +159,9 @@ def main() -> int:
             check(page.locator(".ntf-sub").count() == 1 and page.input_value("#ntf-0-station") == "USC00118740"
                   and page.input_value("#ntf-0-to") == "snesbitt@illinois.edu" and page.input_value("#ntf-0-time") == "09:00",
                   "default: Champaign 3S at 9:00 to snesbitt@illinois.edu")
+            check(page.input_value("#ntf-0-delivery") == "auto" and page.input_value("#ntf-0-github") == "@swnesbitt",
+                  "default delivery: email if a mail server is set up, otherwise a GitHub notification to @swnesbitt")
+            check("Until a mail server is saved, the almanac goes out as a GitHub notification" in page.text_content("#ntf"), "mail section explains the GitHub fallback")
             check("Not saved yet" in page.text_content("#ntf") and "Not set up yet" in page.text_content("#ntf"), "unsaved default and missing mail server are flagged")
             check("Signed in to GitHub as swnesbitt" in page.text_content("#ntf"), "shows the GitHub login")
 
@@ -174,6 +177,14 @@ def main() -> int:
             page.locator(".ntf-sub").nth(1).locator(".ntf-days input").nth(6).uncheck()
             check(page.locator(".ntf-sub").nth(1).locator("button", has_text="Send now").is_disabled(), "Send now waits until saved")
 
+            # A bad GitHub username is refused before anything is written.
+            page.fill("#ntf-1-github", "@not_a/user")
+            page.press("#ntf-1-github", "Tab")
+            page.click("text=Save changes")
+            check("is not a GitHub username" in page.text_content("#ntf .ntf-error") and not fake.secrets, "invalid GitHub username refused")
+            page.fill("#ntf-1-github", "@swnesbitt, @octocat")
+            page.press("#ntf-1-github", "Tab")
+            page.select_option("#ntf-1-delivery", "github")
             # A bad address is refused before anything is written.
             page.fill("#ntf-0-to", "snesbitt@illinois")
             page.press("#ntf-0-to", "Tab")
@@ -188,7 +199,8 @@ def main() -> int:
             print("saved:", json.dumps(subs)[:400])
             check(len(subs) == 2 and subs[1]["station"] == "USW00094846" and subs[1]["time"] == "07:30"
                   and subs[1]["days"] == ["mon", "tue", "wed", "thu", "fri"] and subs[1]["to"] == ["a@example.com", "b@example.org"]
-                  and "CHICAGO" in subs[1]["label"].upper(), "subscriptions saved to the NOTIFY_CONFIG secret (encrypted)")
+                  and "CHICAGO" in subs[1]["label"].upper() and subs[1]["delivery"] == "github" and subs[1]["github"] == ["swnesbitt", "octocat"]
+                  and subs[0]["delivery"] == "auto", "subscriptions saved to the NOTIFY_CONFIG secret (encrypted)")
             check(json.loads(fake.variables["NOTIFY_CONFIG"])["subscriptions"] == subs, "readable copy saved to the NOTIFY_CONFIG variable")
 
             # The sender accepts what the page saved.
@@ -196,7 +208,7 @@ def main() -> int:
             r = subprocess.run([sys.executable, str(ROOT / "scripts" / "send_almanac.py"), "--check", "--state", str(work / "s.json")],
                                env=env, capture_output=True, text=True)
             print(r.stdout.strip())
-            check(r.returncode == 0 and "usw00094846-1" in r.stdout, "send_almanac.py reads the saved settings")
+            check(r.returncode == 0 and "usw00094846-1" in r.stdout and "by github" in r.stdout, "send_almanac.py reads the saved settings (GitHub delivery without a mail server)")
 
             # Send now.
             page.locator(".ntf-sub").nth(1).locator("button", has_text="Send now").click()

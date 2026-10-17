@@ -36,7 +36,14 @@ const MAIL_SECRETS = ["SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD"
 const DEFAULT_SUB = () => ({
   id: "champaign-3s", station: "USC00118740", label: "Champaign 3S, IL", to: ["snesbitt@illinois.edu"],
   time: "09:00", timezone: "America/Chicago", days: [...DAYS], enabled: true, ai: true, pdf: true,
+  delivery: "auto", github: [REPO.split("/")[0]],
 });
+const GH_USER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const DELIVERY = [
+  ["auto", "Email if a mail server is set up, otherwise GitHub notification"],
+  ["email", "Email only (needs the mail server below)"],
+  ["github", "GitHub notification only"],
+];
 
 // A second Lumen client, so the key for the daily email is its own key
 // (named on the Lumen Profile page) and never the one this browser chats with.
@@ -204,9 +211,10 @@ function deliveryLine(sub) {
   if (!s) return state.saved || sub.id === "champaign-3s" ? "Not sent yet." : "Not sent yet (save first).";
   const parts = [];
   if (s.last_sent) parts.push(`Last sent ${fmtWhen(s.last_sent_at)}.`);
+  if (s.issue) parts.push(el("a", { href: `https://github.com/${REPO}/issues/${s.issue}`, target: "_blank", rel: "noopener", textContent: "Open its GitHub issue" }));
   if (s.status?.startsWith("failed")) parts.push(`Last attempt ${fmtWhen(s.last_attempt_at)} ${s.status}.`);
   if (s.last_test) parts.push(`Test ${fmtWhen(s.last_test)}: ${s.last_test_status}.`);
-  return parts.join(" ") || "Not sent yet.";
+  return parts.length ? parts.flatMap((x) => [x, " "]) : "Not sent yet.";
 }
 
 function tokenUrl() {
@@ -286,6 +294,12 @@ function subCard(sub, i) {
   });
   const to = el("input", { id: id("to"), value: sub.to.join(", "), type: "text", autocomplete: "off", placeholder: "netid@illinois.edu, someone@example.com" });
   to.addEventListener("change", () => (sub.to = to.value.split(/[,;\s]+/).filter(Boolean)));
+  sub.delivery ||= "auto";
+  sub.github ||= [REPO.split("/")[0]];
+  const delivery = el("select", { id: id("delivery") }, DELIVERY.map(([v, t]) => el("option", { value: v, textContent: t, selected: v === sub.delivery })));
+  delivery.addEventListener("change", () => (sub.delivery = delivery.value));
+  const ghUsers = el("input", { id: id("github"), value: sub.github.map((u) => `@${u}`).join(", "), type: "text", autocomplete: "off", spellcheck: false, placeholder: "@swnesbitt" });
+  ghUsers.addEventListener("change", () => (sub.github = ghUsers.value.split(/[,;\s]+/).map((u) => u.replace(/^@/, "")).filter(Boolean)));
   const time = el("input", { id: id("time"), type: "time", value: sub.time, step: 900 });
   time.addEventListener("change", () => (sub.time = time.value));
   const zones = ZONES.includes(sub.timezone) ? ZONES : [sub.timezone, ...ZONES];
@@ -326,11 +340,13 @@ function subCard(sub, i) {
   return el("fieldset", { className: "ntf-card ntf-sub" },
     el("legend", { textContent: sub.label || sub.station }),
     field("Station (GHCN-Daily ID or place)", id("station"), stationIn, stationName),
-    field("Send to (separate addresses with commas)", id("to"), to),
+    field("Delivery", id("delivery"), delivery),
+    field("Email addresses (separate with commas)", id("to"), to),
+    field("GitHub accounts to notify (GitHub emails them a copy)", id("github"), ghUsers),
     el("div", { className: "ntf-row" }, field("Time", id("time"), time), field("Time zone", id("tz"), tz)),
     days,
     el("div", { className: "ntf-opts" }, toggle("enabled", "On"), toggle("ai", "AI-written text"), toggle("pdf", "Attach the full almanac as a PDF")),
-    el("p", { className: "fine" }, deliveryLine(sub)),
+    el("p", { className: "fine" }, ...[deliveryLine(sub)].flat()),
     el("div", { className: "ntf-actions" }, sendNow, remove));
 }
 
@@ -338,7 +354,11 @@ function validate(subs) {
   for (const s of subs) {
     const name = s.label || s.station;
     if (!STATION.test(s.station)) return `${name}: the station must be a GHCN-Daily ID such as USC00118740.`;
-    if (!s.to.length) return `${name}: add at least one address.`;
+    if (s.delivery === "email" && !s.to.length) return `${name}: add at least one email address.`;
+    if (s.delivery === "github" && !s.github.length) return `${name}: add at least one GitHub account.`;
+    if (s.delivery === "auto" && !s.to.length && !s.github.length) return `${name}: add an email address or a GitHub account.`;
+    const badUser = s.github.find((u) => !GH_USER.test(u));
+    if (badUser) return `${name}: "${badUser}" is not a GitHub username.`;
     const bad = s.to.find((a) => !EMAIL.test(a));
     if (bad) return `${name}: "${bad}" is not an email address.`;
     if (!/^\d{2}:\d{2}$/.test(s.time)) return `${name}: set a time.`;
@@ -381,6 +401,7 @@ function addSubscription(st = null) {
     id: newId(base), station: base, label: st ? `${st.name}${st.state ? `, ${st.state}` : ""}` : "",
     to: first ? [...first.to] : [], time: "09:00", timezone: first?.timezone || "America/Chicago",
     days: [...DAYS], enabled: true, ai: true, pdf: true,
+    delivery: first?.delivery || "auto", github: first ? [...(first.github || [])] : [REPO.split("/")[0]],
   });
 }
 
@@ -435,7 +456,7 @@ function mailSection() {
   return el("section", { className: "ntf-card" },
     el("h2", { textContent: "Mail server" }),
     el("p", {}, missing.length
-      ? `Not set up yet (missing ${missing.join(", ")}): the job cannot send until a mail server is saved here.`
+      ? `Not set up yet (missing ${missing.join(", ")}). Until a mail server is saved, the almanac goes out as a GitHub notification: a comment on the station's issue in ${REPO} that mentions the GitHub accounts above, which GitHub emails to them.`
       : "Set up. Saved values are not shown; fill in a field only to change it."),
     el("div", { className: "ntf-field" }, el("label", { htmlFor: "ntf-preset", textContent: "Provider" }), preset),
     note, ...fields, el("div", { className: "ntf-actions" }, btn));
@@ -481,7 +502,7 @@ function render(loading = null) {
   msgNode = el("p", { className: "ntf-msg", role: "status", ariaLive: "polite", hidden: true });
   const parts = [
     el("h1", { textContent: "Daily email" }),
-    el("p", {}, "Each morning a scheduled job opens the Climate at a glance page for a station and emails it: the text, tables and charts in the message and the full page as a PDF. It runs on GitHub Actions, so it sends whether or not anyone has this page open, and arrives within about 15 minutes of the time set."),
+    el("p", {}, "Each morning a scheduled job opens the Climate at a glance page for a station and emails it: the text, tables and charts in the message and the full page as a PDF. It runs on GitHub Actions, so it sends whether or not anyone has this page open, and arrives within about 15 minutes of the time set. With no mail server set up, it posts the almanac to a GitHub issue and mentions your GitHub account, so GitHub emails it to you (from notifications@github.com, to your GitHub notification address)."),
   ];
   if (loading) {
     parts.push(el("p", { className: "fine", textContent: `${loading}…` }));

@@ -2,12 +2,18 @@
 
 Runs from .github/workflows/notify.yml every 15 minutes. For each subscription
 that is due (its local send time has passed today and it has not been sent
-today), it opens the live almanac in headless Chrome, so the email shows
-exactly what the page shows, and sends:
+today), it opens the live almanac in headless Chrome, so the message shows
+exactly what the page shows, and delivers it one of two ways:
 
-- an HTML email with each section's text, tables and charts (as inline images);
-- the full almanac as a PDF attachment (optional);
-- a plain-text version.
+- email (needs a mail server): HTML with each section's text, tables and charts
+  (as inline images), the full almanac as a PDF attachment, and plain text;
+- GitHub notification (needs nothing): a comment on the station's "Daily
+  almanac" issue in this repository that @mentions the subscriber's GitHub
+  account, so GitHub emails it to them from notifications@github.com. Charts
+  and the PDF are uploaded to the notify-images release (pruned after 30 days).
+
+A subscription's delivery is "auto" (email when a mail server is set up and it
+has addresses, otherwise GitHub), "email" or "github".
 
 Subscriptions come from the NOTIFY_CONFIG environment variable (the workflow
 passes the NOTIFY_CONFIG repository secret, written by the Daily email tab), or
@@ -19,7 +25,7 @@ addresses) is a JSON file the workflow keeps on the notify-state branch.
     python scripts/send_almanac.py --send --only ID        # send one now
     python scripts/send_almanac.py --send --only ID --dry-run out/   # write files, no email
 
-Mail settings (environment): SMTP_HOST, SMTP_PORT (587 STARTTLS or 465 TLS),
+GitHub delivery uses GITHUB_TOKEN (the workflow's own token). Mail settings (environment): SMTP_HOST, SMTP_PORT (587 STARTTLS or 465 TLS),
 SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM. LUMEN_API_KEY, if set, lets the page
 write the AI text; without it the boxes show the page's plain summaries.
 """
@@ -36,6 +42,9 @@ import smtplib
 import ssl
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from pathlib import Path
@@ -55,6 +64,8 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "ai": True,
             "pdf": True,
+            "delivery": "auto",
+            "github": ["swnesbitt"],
         }
     ],
 }
@@ -63,6 +74,10 @@ DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 STATION_RE = re.compile(r"^[A-Z0-9]{11}$")
 EMAIL_RE = re.compile(r"^[^@\s,;<>\"]+@[^@\s,;<>\"]+\.[A-Za-z]{2,}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+GH_USER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+DELIVERIES = ("auto", "email", "github")
+IMAGES_TAG = "notify-images"
+KEEP_IMAGES = dt.timedelta(days=30)
 LEAD = dt.timedelta(minutes=5)      # a run up to 5 minutes early still counts
 LATE = dt.timedelta(hours=6)        # give up on a day's email this long after its time
 MAX_ATTEMPTS = 3                    # per subscription per day
@@ -114,7 +129,39 @@ def load_config() -> dict:
         s.setdefault("enabled", True)
         s.setdefault("ai", True)
         s.setdefault("pdf", True)
+        s.setdefault("delivery", "auto")
+        if s["delivery"] not in DELIVERIES:
+            raise ConfigError(f"{sid}: delivery must be one of {', '.join(DELIVERIES)}")
+        gh = s.get("github")
+        if gh is None:
+            gh = [repo_owner()]
+        if isinstance(gh, str):
+            gh = re.split(r"[,;\s]+", gh)
+        s["github"] = [u.strip().lstrip("@") for u in gh if u.strip().lstrip("@")]
+        for u in s["github"]:
+            if not GH_USER_RE.match(u):
+                raise ConfigError(f"{sid}: not a GitHub username: {u!r}")
     return cfg
+
+
+def repo_owner() -> str:
+    return os.environ.get("GITHUB_REPOSITORY", "swnesbitt/ghcnd-chat").split("/", 1)[0]
+
+
+def smtp_ready() -> bool:
+    return bool(os.environ.get("SMTP_HOST", "").strip())
+
+
+def channel(sub: dict) -> tuple[str | None, str]:
+    """How this subscription is delivered right now: ("email" | "github" | None, why not)."""
+    d = sub["delivery"]
+    if d in ("email", "auto") and sub["to"] and smtp_ready():
+        return "email", ""
+    if d == "email":
+        return None, "email delivery needs a mail server and at least one address"
+    if sub["github"]:
+        return "github", ""
+    return None, "no GitHub accounts to notify"
 
 
 def mask_addresses(cfg: dict) -> None:
@@ -144,8 +191,9 @@ def due(sub: dict, st: dict, now: dt.datetime) -> tuple[bool, str]:
     today = local.date().isoformat()
     if not sub.get("enabled", True):
         return False, "disabled"
-    if not sub["to"]:
-        return False, "no recipients"
+    ch, why = channel(sub)
+    if not ch:
+        return False, why
     if DAYS[local.weekday()] not in sub["days"]:
         return False, f"not scheduled on {DAYS[local.weekday()]}"
     hh, mm = map(int, sub["time"].split(":"))
@@ -303,6 +351,9 @@ def render(browser, sub: dict, site: str, lumen_key: str | None) -> dict:
         page.wait_for_timeout(800)
         log(f"  rendered in {time.time() - t0:.0f}s")
         data = page.evaluate(EXTRACT_JS)
+        # The page's sign-in hint means nothing in an email.
+        data["foot"] = [f.replace(" Sign in to Lumen on the GHCN chat tab for AI-written summaries; until then the boxes show plain summaries.",
+                                  " This copy has no AI text; the boxes show plain summaries.") for f in data["foot"]]
         charts = []
         for i in range(data["charts"]):
             fig = page.locator(f'figure[data-email-chart="{i}"]')
@@ -432,6 +483,132 @@ def smtp_send(msg: EmailMessage, recipients: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# GitHub notification delivery
+
+
+class GitHub:
+    def __init__(self, repo: str, token: str):
+        self.repo, self.token = repo, token
+
+    def req(self, method: str, url: str, body=None, data: bytes | None = None, ctype: str = "application/json"):
+        if not self.token:
+            raise RuntimeError("GITHUB_TOKEN is not set")
+        if not url.startswith("https://"):
+            url = f"https://api.github.com/repos/{self.repo}{url}"
+        if body is not None:
+            data = json.dumps(body).encode()
+        r = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28", "Content-Type": ctype, "User-Agent": "ghcnd-chat-notify"})
+        try:
+            with urllib.request.urlopen(r, timeout=60) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            msg = exc.read().decode(errors="replace")[:300]
+            err = RuntimeError(f"GitHub {method} {url.split('?')[0]}: {exc.code} {msg}")
+            err.status = exc.code
+            raise err from None
+        return json.loads(raw) if raw else None
+
+
+def images_release(gh: GitHub) -> dict:
+    try:
+        return gh.req("GET", f"/releases/tags/{IMAGES_TAG}")
+    except RuntimeError as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+    return gh.req("POST", "/releases", {
+        "tag_name": IMAGES_TAG, "name": "Daily almanac images", "prerelease": True, "make_latest": "false",
+        "body": "Charts and PDFs for the daily almanac issue comments, posted by .github/workflows/notify.yml. Files older than 30 days are deleted.",
+    })
+
+
+def upload(gh: GitHub, rel: dict, name: str, data: bytes, ctype: str) -> str:
+    url = f"https://uploads.github.com/repos/{gh.repo}/releases/{rel['id']}/assets?name={urllib.parse.quote(name)}"
+    return gh.req("POST", url, data=data, ctype=ctype)["browser_download_url"]
+
+
+def prune_images(gh: GitHub, rel: dict, now: dt.datetime) -> None:
+    page = 1
+    while True:
+        assets = gh.req("GET", f"/releases/{rel['id']}/assets?per_page=100&page={page}")
+        for x in assets:
+            if now - dt.datetime.fromisoformat(x["created_at"].replace("Z", "+00:00")) > KEEP_IMAGES:
+                gh.req("DELETE", f"/releases/assets/{x['id']}")
+        if len(assets) < 100:
+            return
+        page += 1
+
+
+def _emph(style: str, text: str) -> str:
+    if not text.strip():
+        return text
+    if re.search(r"font-weight:(600|700)", style):
+        text = f"<strong>{text}</strong>"
+    if "font-style:italic" in style:
+        text = f"<em>{text}</em>"
+    return text
+
+
+def github_comment(d: dict, sub: dict, site: str, local_day: dt.date, chart_urls: list[str], pdf_url: str | None) -> str:
+    body = d["body"]
+    for i, u in enumerate(chart_urls):
+        body = body.replace(f"cid:__CHART{i}__", u)
+    # GitHub drops style attributes: the blue boxes become block quotes.
+    body = re.sub(r'<div style="background-color:#e9f6fb[^"]*">(.*?)</div>', r"<blockquote>\1</blockquote>", body, flags=re.S)
+    # Keep bold and italic cells (the big values, forecast rows) as tags.
+    body = re.sub(r'<(div|td|th|span)([^>]*?)\sstyle="([^"]*)"([^>]*)>([^<]*)</\1>',
+                  lambda m: f"<{m[1]}{m[2]}{m[4]}>" + _emph(m[3], m[5]) + f"</{m[1]}>", body)
+    body = re.sub(r'\sstyle="[^"]*"', "", body)
+    body = re.sub(r"\n\s*\n+", "\n", body).strip()
+    e = html.escape
+    live = f"{site}?station={sub['station']}"
+    day = f"{local_day:%A}, {local_day:%B} {local_day.day}, {local_day.year}"
+    mentions = " ".join("@" + u for u in sub["github"])
+    links = [f"[Live almanac]({live})"] + ([f"[Full almanac (PDF)]({pdf_url})"] if pdf_url else [])
+    head = (f"{mentions} **{e(sub.get('label') or d['title'])}, {day}.** {e(d.get('headline') or '')}\n\n"
+            f"{' · '.join(links)}\n\n")
+    foot = "<br>\n".join(e(f) for f in d["foot"])
+    tail = (f"\n\n<sub>{foot}</sub>\n\n<sub>Posted by the daily almanac job for {e(sub.get('label') or d['title'])} ({sub['station']}). "
+            f"Change or stop it on the [Daily email tab]({site}#email).</sub>\n")
+    md = head + body + tail
+    if len(md) > 64000:  # GitHub's comment limit is 65,536 characters
+        md = head + "<blockquote>" + e(d.get("preheader") or "") + "</blockquote>" + tail
+    return md
+
+
+def post_to_github(gh: GitHub, d: dict, sub: dict, site: str, local_day: dt.date, now: dt.datetime, st: dict) -> str:
+    rel = images_release(gh)
+    stamp = f"{sub['id']}-{local_day.isoformat()}-{now:%H%M}"
+    charts = [upload(gh, rel, f"{stamp}-chart{i}.png", png, "image/png") for i, png in enumerate(d["chart_png"])]
+    pdf = upload(gh, rel, f"almanac-{sub['station']}-{local_day.isoformat()}-{now:%H%M}.pdf", d["pdf"], "application/pdf") if d.get("pdf") else None
+    try:
+        prune_images(gh, rel, now)
+    except RuntimeError as exc:
+        log(f"  could not prune old images: {exc}")
+    title = f"Daily almanac: {sub.get('label') or d['title']} ({sub['station']})"
+    issue = None
+    if st.get("issue"):
+        try:
+            issue = gh.req("GET", f"/issues/{st['issue']}")
+        except RuntimeError:
+            issue = None
+    if not issue or issue.get("title") != title:
+        found = [i for i in gh.req("GET", "/issues?state=open&per_page=100&creator=github-actions%5Bbot%5D")
+                 if i.get("title") == title and "pull_request" not in i]
+        issue = found[0] if found else gh.req("POST", "/issues", {
+            "title": title,
+            "body": (f"Each morning the daily almanac job posts the [Climate at a glance]({site}?station={sub['station']}) "
+                     f"page for {sub.get('label') or d['title']} here, and the GitHub accounts it mentions get it by email "
+                     "(from notifications@github.com, if email notifications for mentions are on). "
+                     f"Change or stop it on the [Daily email tab]({site}#email)."),
+        })
+    st["issue"] = issue["number"]
+    c = gh.req("POST", f"/issues/{issue['number']}/comments", {"body": github_comment(d, sub, site, local_day, charts, pdf)})
+    return c["html_url"]
+
+
 def default_site() -> str:
     repo = os.environ.get("GITHUB_REPOSITORY", "swnesbitt/ghcnd-chat")
     owner, name = repo.split("/", 1)
@@ -473,14 +650,11 @@ def main() -> int:
         todo = []
         for s in subs:
             ok, why = due(s, sstate.get(s["id"], {}), now)
-            log(f"{s['id']} ({s['station']}, {s['time']} {s['timezone']}): {why}")
+            log(f"{s['id']} ({s['station']}, {s['time']} {s['timezone']}, by {channel(s)[0] or 'nothing'}): {why}")
             if ok:
                 todo.append(s)
 
     if a.check:
-        if todo and not os.environ.get("SMTP_HOST", "").strip():
-            log("::notice::Due, but no mail server is set up yet (Daily email tab > Mail server); not sending.")
-            todo = []
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
             with open(out, "a") as f:
@@ -493,9 +667,10 @@ def main() -> int:
     from playwright.sync_api import sync_playwright
 
     sender = os.environ.get("MAIL_FROM", "").strip() or os.environ.get("SMTP_USERNAME", "").strip()
-    if not a.dry_run and not sender:
+    if not a.dry_run and not sender and any(channel(s)[0] == "email" for s in todo):
         log("::error::MAIL_FROM (or SMTP_USERNAME) is not set")
         return 1
+    gh = GitHub(os.environ.get("GITHUB_REPOSITORY", "swnesbitt/ghcnd-chat"), os.environ.get("GITHUB_TOKEN", ""))
     if sender and not parseaddr(sender)[0]:
         sender = formataddr(("Climate at a glance", parseaddr(sender)[1]))
     lumen_key = os.environ.get("LUMEN_API_KEY", "").strip() or None
@@ -509,8 +684,14 @@ def main() -> int:
             st = sstate.setdefault(s["id"], {})
             local_day = now.astimezone(ZoneInfo(s["timezone"])).date()
             forced = bool(a.only)
-            log(f"Sending {s['id']} ({s['station']}) to {len(s['to'])} address(es){' (on request)' if forced else ''}")
+            ch, why = channel(s)
+            if a.dry_run and not ch:
+                ch = "github"
             try:
+                if not ch:
+                    raise RuntimeError(why)
+                who = f"{len(s['to'])} address(es)" if ch == "email" else "GitHub " + ", ".join("@" + u for u in s["github"])
+                log(f"Sending {s['id']} ({s['station']}) by {ch} to {who}{' (on request)' if forced else ''}")
                 d = None
                 for attempt in range(2):  # the NWS and NOAA services are occasionally slow
                     try:
@@ -538,9 +719,16 @@ def main() -> int:
                     if d.get("pdf"):
                         (out / f"{s['id']}.pdf").write_bytes(d["pdf"])
                     (out / f"{s['id']}.txt").write_text(msg.get_body(("plain",)).get_content())
-                    log(f"  wrote {out / (s['id'] + '.eml')}")
+                    md = github_comment(d, s, site, local_day, [f"{s['id']}-chart{i}.png" for i in range(len(d["chart_png"]))],
+                                        f"{s['id']}.pdf" if d.get("pdf") else None)
+                    (out / f"{s['id']}.md").write_text(md)
+                    log(f"  wrote {out / (s['id'] + '.eml')} and {s['id']}.md ({len(md) // 1024} KB comment)")
                     continue
-                smtp_send(msg, s["to"])
+                if ch == "email":
+                    smtp_send(msg, s["to"])
+                else:
+                    url = post_to_github(gh, d, s, site, local_day, now, st)
+                    log(f"  posted {url}")
                 stamp = now.isoformat(timespec="seconds")
                 if forced:
                     st.update(last_test=stamp, last_test_status="sent")

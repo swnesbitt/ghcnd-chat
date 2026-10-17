@@ -12,6 +12,10 @@
 # AI-written text). Without NOTIFY_CONFIG the default in
 # scripts/send_almanac.py applies (Champaign 3S, 9:00 a.m. Central).
 #
+# Without a mail server, almanacs go out as GitHub notifications instead: a
+# comment on the station's "Daily almanac" issue that @mentions the subscriber,
+# which GitHub emails to them. That needs no setup.
+#
 # What was sent when (subscription ids and dates, no addresses) is kept on the
 # notify-state branch, which the Daily email tab reads.
 
@@ -28,7 +32,8 @@ on:
         default: ""
 
 permissions:
-  contents: write   # the notify-state branch
+  contents: write   # the notify-state branch and the notify-images release
+  issues: write     # GitHub notification delivery (a comment on the station's issue)
 
 concurrency:
   group: notify
@@ -75,6 +80,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           LUMEN_API_KEY: ${{ secrets.LUMEN_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           ONLY: ${{ inputs.subscription }}
         run: |
           pip install --quiet playwright

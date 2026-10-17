@@ -162,8 +162,24 @@ templated text.
 
 The third tab, **Daily email**, sets up a scheduled email of the almanac for
 one or more stations. By default (until settings are first saved) it sends
-Champaign 3S (`USC00118740`) at 9:00 a.m. Central every day to
-snesbitt@illinois.edu.
+Champaign 3S (`USC00118740`) at 9:00 a.m. Central every day, by email to
+snesbitt@illinois.edu once a mail server is set up and, until then, as a GitHub
+notification to @swnesbitt.
+
+Each subscription is delivered one of two ways:
+
+- **Email**, through an SMTP server saved on the tab: HTML with the charts
+  inline, the PDF attached, any addresses.
+- **GitHub notification**, with no setup: the job posts the almanac as a comment
+  on the station's "Daily almanac" issue in this repository and @mentions the
+  subscriber's GitHub accounts, and GitHub emails it to them from
+  notifications@github.com (to each account's notification address, if email
+  for mentions is on). Charts and the PDF are uploaded to the `notify-images`
+  release and deleted after 30 days. Only GitHub accounts can receive it, and
+  the issue is public, like the rest of the repository.
+
+The default delivery is email when a mail server is set up and the subscription
+has addresses, otherwise GitHub.
 
 How it works:
 
@@ -171,8 +187,8 @@ How it works:
   checks which subscriptions are due (their local time has passed today and
   they have not been sent today; up to three attempts a day), opens the live
   page in headless Chrome at `?station=…` in the subscription's time zone, and
-  emails the result: each section's text and tables, the charts as inline
-  images, and the whole page as a PDF. It records what it sent (subscription
+  delivers the result: each section's text and tables, the charts, and the
+  whole page as a PDF. It records what it sent (subscription
   ids and dates only) on the `notify-state` branch.
 - The tab stores everything as repository secrets, encrypted in the browser
   with the repository's public key: `NOTIFY_CONFIG` (subscriptions), `SMTP_HOST`,
