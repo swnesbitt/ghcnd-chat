@@ -232,6 +232,7 @@ function stepLabel(name, args = {}) {
       const when = args.end_date && args.end_date !== args.start_date ? `${args.start_date} to ${args.end_date}` : args.start_date;
       return `Loaded all stations ${areaLabel(args) || ""}, ${(args.elements || ["TMAX"]).join(", ")}, ${when}`;
     }
+    case "load_records": return `Loaded records ${areaLabel(args)}`.trim();
     case "run_sql": return "Ran a query";
     case "make_chart": return args.title ? `Drew a chart: ${args.title}` : "Drew a chart";
     default: return `Called ${name}`;
@@ -622,6 +623,7 @@ async function ask(text) {
       find_stations: (a) => g.findStations(a),
       load_series: (a) => g.loadSeries(a),
       load_area: (a) => g.loadArea(a),
+      load_records: (a) => g.loadRecords(a),
       run_sql: (a) => g.runSql(a),
       make_chart: (a) => makeChart(a),
     };

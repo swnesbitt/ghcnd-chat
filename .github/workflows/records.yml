@@ -1,0 +1,62 @@
+# Rebuilds the monthly and all-time records from every GHCN-Daily value and
+# publishes them as the release asset records-latest/records.tar.gz, which the
+# Pages workflow downloads into the site. Runs on the 15th of each month, when
+# the build script changes, and on demand (Actions > Update records > Run workflow).
+#
+# GitHub pauses scheduled workflows in public repositories after 60 days with no
+# commits (it emails a warning first); re-enable it from the Actions tab.
+
+name: Update records
+
+on:
+  schedule:
+    - cron: "17 9 15 * *"   # 09:17 UTC on the 15th, about 4 a.m. Central
+  push:
+    branches: [main]
+    paths:
+      - scripts/build_records.py
+      - .github/workflows/records.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write   # publish the release asset
+  actions: write    # start the Pages deploy afterwards
+
+concurrency:
+  group: records
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build station index (for regions)
+        run: |
+          pip install duckdb
+          python scripts/build_station_index.py .
+
+      - name: Build records from every GHCN-Daily value
+        run: python scripts/build_records.py records --index station_index.parquet
+
+      - name: Publish as the records-latest release asset
+        run: |
+          tar czf records.tar.gz records
+          through=$(python -c "import json; print(json.load(open('records/meta.json'))['data_through'])")
+          if ! gh release view records-latest >/dev/null 2>&1; then
+            gh release create records-latest --title "GHCN-Daily records" \
+              --notes "Monthly and all-time station records, rebuilt on the 15th of each month." --latest=false
+          fi
+          gh release upload records-latest records.tar.gz --clobber
+          gh release edit records-latest --notes "Monthly and all-time station records, data through ${through}. Rebuilt on the 15th of each month."
+
+      - name: Redeploy the site with the new records
+        run: gh workflow run pages.yml --ref main

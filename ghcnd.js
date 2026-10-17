@@ -556,6 +556,74 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     };
   }
 
+  // Precomputed records (scripts/build_records.py, refreshed monthly): one file
+  // per US state, Canadian province or other country. load_records fetches the
+  // files covering an area into table records and puts the area's station IDs
+  // in area_stations, so all-time and monthly extremes for a whole state need
+  // no raw data at all.
+  let recordsMeta = null;
+  const recordRegions = new Set();
+  const MAX_RECORD_REGIONS = 12;
+
+  async function loadRecords(areaArgs = {}) {
+    if (!recordsMeta) {
+      const resp = await fetch(new URL(CONFIG.recordsBase + "meta.json", location.href));
+      if (!resp.ok) throw new ToolError("The records table has not been built yet; use load_area or load_series instead.");
+      recordsMeta = await resp.json();
+      await q(`CREATE TABLE IF NOT EXISTS records (id VARCHAR, element VARCHAR, month TINYINT, stat VARCHAR,
+                 value DOUBLE, date DATE, runner_up DOUBLE, n_years SMALLINT, n_days INTEGER)`);
+    }
+    const area = await resolveArea(areaArgs);
+    if (!area.where.length) throw new ToolError("Give a state, county (with state), country, place, lat/lon, or a list of stations.");
+    await q(`CREATE OR REPLACE TABLE area_stations AS SELECT s.id FROM stations s WHERE ${area.where.join(" AND ")}`);
+    const regions = toRows(await q(`
+      SELECT DISTINCT CASE WHEN s.state <> '' THEN s.country || '-' || s.state ELSE s.country END AS region
+      FROM stations s JOIN area_stations a USING (id)`)).map((r) => r.region);
+    if (!regions.length) throw new ToolError(`No stations in the index match ${area.label}.`);
+    if (regions.length > MAX_RECORD_REGIONS) {
+      throw new ToolError(`That area spans ${regions.length} states or countries; records load at most ${MAX_RECORD_REGIONS} at a time. Narrow the area.`);
+    }
+    const missing = [];
+    for (const region of regions) {
+      if (recordRegions.has(region)) continue;
+      if (!recordsMeta.regions[region]) {
+        missing.push(region);
+        continue;
+      }
+      const resp = await fetch(new URL(`${CONFIG.recordsBase}${region}.parquet`, location.href));
+      if (!resp.ok) {
+        missing.push(region);
+        continue;
+      }
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      const size = buf.byteLength;
+      const name = `records_${region}.parquet`;
+      await db.registerFileBuffer(name, buf);
+      await q(`INSERT INTO records SELECT * FROM '${name}'`);
+      stats.bytes += size;
+      stats.files += 1;
+      onActivity({ kind: "download", stats: { ...stats } });
+      recordRegions.add(region);
+    }
+    const n = toRows(await q(`
+      SELECT count(DISTINCT r.id) AS stations, string_agg(DISTINCT r.element, ', ' ORDER BY r.element) AS elements
+      FROM records r JOIN area_stations a USING (id)`))[0];
+    return {
+      area: area.label,
+      place: area.place || undefined,
+      regions_loaded: regions.filter((r) => recordRegions.has(r)),
+      regions_without_records: missing.length ? missing : undefined,
+      stations_with_records: n.stations,
+      elements: n.elements,
+      data_through: recordsMeta.data_through,
+      built_at: recordsMeta.built_at,
+      tables:
+        "records(id, element, month, stat, value, date, runner_up, n_years, n_days) holds whole regions; " +
+        "join area_stations(id) to restrict to this area, and stations for names. month 0 = all months; " +
+        "stat 'max' or 'min'; value in the same units as obs.",
+    };
+  }
+
   // Read-only SQL over the session tables. The CSP in index.html is what
   // really stops the database from reaching other hosts; this guard keeps the
   // model on SELECT-style queries over loaded data and gives a clear error.
@@ -598,6 +666,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     findStations,
     loadSeries,
     loadArea,
+    loadRecords,
     runSql,
     select,
     stats: () => ({ ...stats }),

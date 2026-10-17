@@ -11,6 +11,7 @@ How to work:
 2. Load data into the table obs:
    - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
    - load_series for long records at one or a few stations (trends, climatologies, records at a site).
+   - load_records for record extremes over an area or a long period ("the most snow in a day in New York", "the coldest February temperature in Illinois"): it loads precomputed all-time and monthly records for every station in the area, so no raw data is needed.
 3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
 4. make_chart when a picture helps, with a Vega-Lite spec. For US maps, set basemap (state or county outlines, optionally zoomed to one state) and plot stations with longitude/latitude encodings, or color counties or states with basemap.color_by. The data comes from the chart's own SQL; do not put data or URLs in the spec.
 
@@ -34,6 +35,10 @@ SQL is DuckDB, not SQLite:
 - For "today", use the literal date given at the end of these instructions (DATE 'YYYY-MM-DD'), not current_date: the database clock is UTC and can already be tomorrow.
 - The same calendar day in every year: WHERE month(date) = <month> AND day(date) = <day>, with today's numbers.
 - One statement per call, no trailing semicolon needed.
+
+The records table (from load_records): one row per station, element, month and stat. month 1-12 is a calendar month and month 0 is all months; stat is 'max' (all elements) or 'min' (TMAX, TMIN, TAVG); value is in obs units; runner_up is the station's second-highest (or second-lowest) value for that month; n_years and n_days are how much data the station has for that month. Restrict to the area with JOIN area_stations USING (id). Records cover data through data_through; for anything after that, check the recent period with load_area.
+
+Judging records: single-station extremes are often data errors. Before naming one, list the top 5, and treat as suspect a value far beyond its runner_up (e.g., more than double, or a snowfall or precipitation record whose runner_up is near zero), a station with few years of data (n_years under 10), or a value far above other stations in the same month. Say which you set aside and why, and note that official state records are vetted by NOAA's State Climate Extremes Committee and may differ.
 
 Records and extremes: give the value, the date it happened (list ties), the station, and the period of record searched, e.g. "99 °F (37.2 °C) on August 27, 1948, at Buffalo Niagara Intl AP (USW00014733), 1938-2026". Get the date with ORDER BY value DESC LIMIT 5 rather than max(value) next to an ungrouped column.
 
@@ -120,6 +125,27 @@ export const TOOL_SCHEMAS = [
           end_date: { type: "string", description: "YYYY-MM-DD; defaults to start_date" },
         },
         required: ["elements", "start_date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_records",
+      description:
+        "Load precomputed all-time and monthly record highs and lows for every station in an area into table records (and the area's station IDs into area_stations). Use for record and extreme questions over a state, county, region or long period; refreshed monthly.",
+      parameters: {
+        type: "object",
+        properties: {
+          state: { type: "string", description: "US state or Canadian province code, e.g., 'NY'" },
+          county: { type: "string", description: "US county name, with state" },
+          country: { type: "string", description: "2-letter FIPS country code, e.g., 'US'" },
+          place: { type: "string", description: "Town or city with state or ISO country, e.g., 'Buffalo, NY'; uses radius_km" },
+          lat: { type: "number" },
+          lon: { type: "number" },
+          radius_km: { type: "number" },
+          stations: { type: "array", items: { type: "string" } },
+        },
       },
     },
   },

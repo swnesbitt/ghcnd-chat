@@ -1,5 +1,7 @@
 station_index.parquet
 places.parquet
+records/
+records.tar.gz
 test/out/
 requests.jsonl
 __pycache__/
