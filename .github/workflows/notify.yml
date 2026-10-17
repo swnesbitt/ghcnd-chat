@@ -1,0 +1,92 @@
+# Emails the Climate at a glance almanac to subscribers each morning.
+#
+# Runs every 15 minutes and sends each subscription once a day, at the first
+# run after its local send time (GitHub cron is UTC and sometimes runs late,
+# so emails arrive within about 15 minutes of the time set). Most runs find
+# nothing due and finish in seconds.
+#
+# Settings live on the site's Daily email tab, which stores them in repository
+# secrets: NOTIFY_CONFIG (subscriptions, including recipient addresses, so they
+# never appear in this public repository or its logs), SMTP_HOST, SMTP_PORT,
+# SMTP_USERNAME, SMTP_PASSWORD, MAIL_FROM and LUMEN_API_KEY (optional, for the
+# AI-written text). Without NOTIFY_CONFIG the default in
+# scripts/send_almanac.py applies (Champaign 3S, 9:00 a.m. Central).
+#
+# What was sent when (subscription ids and dates, no addresses) is kept on the
+# notify-state branch, which the Daily email tab reads.
+
+name: Daily almanac email
+
+on:
+  schedule:
+    - cron: "11,26,41,56 * * * *"
+  workflow_dispatch:
+    inputs:
+      subscription:
+        description: "Subscription id to send now (leave empty to send whatever is due)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # the notify-state branch
+
+concurrency:
+  group: notify
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
+      - name: Fetch the delivery log
+        run: |
+          if git ls-remote --exit-code --heads origin notify-state >/dev/null; then
+            git fetch --depth=1 origin notify-state
+            git worktree add --detach state FETCH_HEAD
+          else
+            git worktree add --orphan -b notify-state state
+          fi
+
+      - name: Check what is due
+        id: check
+        if: inputs.subscription == ''
+        env:
+          NOTIFY_CONFIG: ${{ secrets.NOTIFY_CONFIG }}
+        run: python3 scripts/send_almanac.py --check
+
+      - uses: actions/setup-python@v7
+        if: inputs.subscription != '' || steps.check.outputs.due != ''
+        with:
+          python-version: "3.12"
+
+      - name: Render and send
+        if: inputs.subscription != '' || steps.check.outputs.due != ''
+        env:
+          NOTIFY_CONFIG: ${{ secrets.NOTIFY_CONFIG }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          LUMEN_API_KEY: ${{ secrets.LUMEN_API_KEY }}
+          ONLY: ${{ inputs.subscription }}
+        run: |
+          pip install --quiet playwright
+          python scripts/send_almanac.py --send ${ONLY:+--only "$ONLY"}
+
+      - name: Save the delivery log
+        if: always() && (inputs.subscription != '' || steps.check.outputs.due != '')
+        run: |
+          [ -f state/state.json ] || exit 0
+          cd state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "Delivery log $(date -u +%FT%TZ)"
+          git push -q origin HEAD:notify-state

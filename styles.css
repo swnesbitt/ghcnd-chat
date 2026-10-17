@@ -419,6 +419,70 @@ a:hover { color: var(--accent); }
   .connect h1 { font-size: 1.5rem; }
 }
 
+/* ---- Daily email ---------------------------------------------------------- */
+
+.ntf h1 { font-size: 1.75rem; font-weight: 700; margin: 0.5rem 0 0.75rem; }
+.ntf > p { max-width: var(--measure); }
+.ntf-h { font-size: 1.375rem; font-weight: 700; margin: 2rem 0 0.75rem; }
+.ntf-card {
+  margin: 1.25rem 0;
+  padding: 1rem 1.25rem 1.1rem;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--il-arches, #009fd4);
+  background: var(--surface);
+}
+.ntf-card h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 0.5rem; }
+.ntf-card h3 { font-size: 1.0625rem; font-weight: 700; margin: 1rem 0 0.25rem; }
+.ntf-card p { margin: 0.25rem 0 0.75rem; }
+.ntf-sub legend { font-family: var(--font-heading); font-weight: 700; font-size: 1.125rem; padding: 0 0.35rem; }
+fieldset.ntf-sub { min-width: 0; }
+.ntf-field { display: flex; flex-direction: column; gap: 0.25rem; margin: 0 0 0.85rem; }
+.ntf-field label, .ntf-token > label { font-weight: 600; }
+.ntf-field input, .ntf-field select, .ntf-token input {
+  padding: 0.5rem 0.7rem;
+  font: inherit;
+  border: 1px solid var(--ink-soft);
+  background: var(--surface);
+  color: inherit;
+  max-width: 34rem;
+}
+.ntf-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+.ntf-days, .ntf-opts { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin: 0 0 0.75rem; }
+.ntf-check { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 400; }
+.ntf-check input { width: 1.1rem; height: 1.1rem; accent-color: var(--ink); }
+.ntf-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.ntf-token .ntf-check { margin-top: 0.5rem; }
+.ntf-who { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.ntf-log { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; }
+.ntf-log li { margin: 0.2rem 0; }
+.ntf-msg {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 1rem 0 0;
+  padding: 0.7rem 1rem;
+  background: var(--ink);
+  color: #fff;
+  font-weight: 600;
+}
+.ntf-msg.ntf-error { background: var(--danger); }
+.alm-actions { margin: 0.75rem 0 0; }
+
+/* ---- Print (and the PDF attached to the daily email) ------------------- */
+
+@media print {
+  ilw-header, ilw-footer, .tabs, #banner, #panel-chat, .alm-form, #alm-choices, #alm-status,
+  .alm-actions, .copy-log, .vega-embed details, .vega-embed .vega-actions { display: none !important; }
+  body { background: #fff; }
+  .almanac { max-width: none; padding: 0; }
+  .alm-head { margin-top: 0; }
+  .alm-box, .alm-flag { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .alm-section h2, .alm-section h3 { break-after: avoid; }
+  .alm-box, .alm-chart, .alm-table tr { break-inside: avoid; }
+  .alm-scroll, .alm-chart { overflow: visible; }
+  .alm-table td, .alm-table th { padding-right: 0.6rem; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
 }

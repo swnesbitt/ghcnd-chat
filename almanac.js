@@ -1109,7 +1109,13 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   } else {
     page.querySelector(".alm-ai").textContent += " Sign in to Lumen on the GHCN chat tab for AI-written summaries; until then the boxes show plain summaries.";
   }
-  return { station: st, facts, asOf: historical ? D : null };
+  // A one-line summary for email subjects, and a flag the email sender waits for.
+  const headDay = historical ? null : T;
+  const headline = headDay && isNum(headDay.tmax)
+    ? `Today: high ${F.t(headDay.tmax)}${isNum(headDay.tmin) ? `, low ${F.t(headDay.tmin)}` : ""}${isNum(headDay.dep_hi) ? `, ${Math.round(headDay.dep_hi) === 0 ? "a normal high" : `high ${Math.abs(Math.round(headDay.dep_hi))}° ${headDay.dep_hi < 0 ? "below" : "above"} normal`}` : ""}`
+    : L && isNum(L.tmax) ? `${latestLabel}: high ${F.t(L.tmax)}${isNum(L.tmin) ? `, low ${F.t(L.tmin)}` : ""}` : "";
+  page.dataset.ready = "true";
+  return { station: st, facts, headline, asOf: historical ? D : null };
 }
 
 // ---------------------------------------------------------------------------

@@ -27,3 +27,7 @@ Information System (ACIS), https://www.rcc-acis.org.
 
 Forecasts: National Weather Service API (api.weather.gov). Normals: NOAA NCEI
 U.S. Climate Normals 1991-2020.
+
+Daily email tab: TweetNaCl.js 1.0.3 (https://github.com/dchest/tweetnacl-js,
+public domain, Unlicense) and blakejs 1.2.1 (https://github.com/dcposch/blakejs,
+CC0), loaded from jsDelivr to encrypt settings for GitHub's secrets API.

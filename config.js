@@ -15,6 +15,10 @@ export const CONFIG = {
   // first model that advertises tool calling.
   preferredModel: "gemma-4-31b-it",
 
+  // The GitHub repository that hosts this page. The Daily email tab stores its
+  // settings there (as Actions secrets) for .github/workflows/notify.yml.
+  repo: "swnesbitt/ghcnd-chat",
+
   // NOAA Open Data Dissemination bucket for GHCN-Daily.
   bucket: "https://noaa-ghcn-pds.s3.amazonaws.com",
 
