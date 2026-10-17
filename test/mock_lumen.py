@@ -85,6 +85,26 @@ SCRIPT = [
         "vega_lite": {},
         "basemap": {"level": "counties", "state": "IL", "color_by": {"field": "tmax_f", "scheme": "reds"}},
     }),
+    # Scatter of a year column (must not start at year 0) and of dates sent as quantitative.
+    ("make_chart", {
+        "title": "Highs on October 16",
+        "sql": """SELECT year(date) AS year, round(value * 9 / 5 + 32) AS tmax_f FROM obs
+                  WHERE station = 'USC00118740' AND element = 'TMAX' AND month(date) = 10 AND day(date) = 16""",
+        "vega_lite": {"mark": {"type": "point"}, "encoding": {
+            "x": {"field": "year", "type": "quantitative", "title": "Year"},
+            "y": {"field": "tmax_f", "type": "quantitative"}}},
+    }),
+    ("make_chart", {
+        "title": "Daily highs, 2024",
+        "sql": """SELECT date, value AS tmax_c FROM obs
+                  WHERE station = 'USC00118740' AND element = 'TMAX' AND year(date) = 2024 ORDER BY date""",
+        "vega_lite": {"mark": "point", "encoding": {
+            "x": {"field": "date", "type": "quantitative"},
+            "y": {"field": "tmax_c", "type": "quantitative"}}},
+    }),
+    # NWS forecast for Champaign 3S, then a query against the forecast table.
+    ("get_forecast", {"station": "USC00118740"}),
+    ("run_sql", {"query": "SELECT date, element, value FROM forecast WHERE station = 'USC00118740' AND element IN ('TMAX', 'TMIN', 'PRCP') ORDER BY date, element"}),
 ]
 
 FINAL = """The wettest years at **CHAMPAIGN 3S** (`USC00118740`) since 1990, counting only years with at least 90% of days present:

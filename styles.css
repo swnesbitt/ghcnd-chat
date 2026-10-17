@@ -294,6 +294,22 @@ a:hover { color: var(--accent); }
    would do nothing; hide it. The two CSP messages in the console are expected. */
 #ot-sdk-btn { display: none !important; }
 
+/* ---- Copy log ------------------------------------------------------------ */
+
+.copy-log { margin: 0.4rem 0 0.6rem; }
+.copy-log button { font-size: 0.875rem; padding: 0.25rem 0.6rem; }
+.copy-log .fine { margin: 0.4rem 0; }
+.log-text {
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  border: 1px solid var(--rule);
+  background: var(--code-bg);
+}
+.error-block .error-text { margin: 0; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.banner .copy-log { margin: 0; }
+
 /* ---- Small screens ------------------------------------------------------ */
 
 @media (max-width: 52rem) {

@@ -34,5 +34,5 @@ export const CONFIG = {
   maxDownloadMBPerCall: 250,
   maxSqlRows: 200,
   maxChartRows: 20000,
-  maxToolSteps: 20,
+  maxToolSteps: 24,
 };

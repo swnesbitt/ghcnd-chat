@@ -624,6 +624,135 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     };
   }
 
+  // NWS forecast from the National Digital Forecast Database (api.weather.gov):
+  // the 2.5 km grid cell containing a station (or place, or point), reduced to
+  // local calendar days so it lines up with GHCN-Daily. US coverage only.
+  //   TMAX  daytime max (°C), dated by the local day it is forecast for
+  //   TMIN  overnight min (°C), dated by the morning it ends, as co-op observers report it
+  //   PRCP, SNOW  totals (mm), 6-hour amounts split across local days by hour
+  //   POP   highest chance of precipitation in the day (%)
+  //   GUST  highest wind gust in the day (km/h)
+  const NWS = "https://api.weather.gov";
+
+  async function nwsJson(url) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resp = await fetch(url, { headers: { Accept: "application/geo+json" } });
+      if (resp.ok) return resp.json();
+      if (resp.status === 404) return null;
+      if (attempt === 2 || resp.status < 500) {
+        const body = await resp.json().catch(() => ({}));
+        throw new ToolError(`The National Weather Service API returned ${resp.status}: ${body.detail || body.title || resp.statusText}`);
+      }
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); // NWS gridpoints often 500 once, then work
+    }
+  }
+
+  // ISO 8601 duration like PT6H, P1D, P1DT12H to hours.
+  const durHours = (d) => {
+    const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/.exec(d);
+    return m ? (Number(m[1] || 0) * 24 + Number(m[2] || 0) + Number(m[3] || 0) / 60) : 1;
+  };
+
+  async function getForecast({ station, place, lat, lon, state, country } = {}) {
+    let point;
+    let label;
+    let stationRow = null;
+    if (station) {
+      const id = String(station).trim().toUpperCase();
+      if (!STATION_RE.test(id)) throw new ToolError(`"${station}" is not a GHCN-Daily station ID.`);
+      stationRow = toRows(await q(`SELECT id, name, state, lat, lon, elev_m FROM stations WHERE id = ${sqlString(id)}`))[0];
+      if (!stationRow) throw new ToolError(`Station ${id} is not in the station index.`);
+      point = { lat: stationRow.lat, lon: stationRow.lon };
+      label = `${stationRow.name}, ${stationRow.state} (${id})`;
+    } else if (place) {
+      const p = await resolvePlace(place, state ? String(state).toUpperCase() : "", country ? String(country).toUpperCase() : "");
+      point = { lat: p.lat, lon: p.lon };
+      label = `${p.name}, ${p.country === "US" ? p.admin1 : p.country}`;
+    } else if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      point = { lat, lon };
+      label = `${lat}, ${lon}`;
+    } else {
+      throw new ToolError("Give a station ID, a place, or lat and lon.");
+    }
+
+    const pts = await nwsJson(`${NWS}/points/${point.lat.toFixed(4)},${point.lon.toFixed(4)}`);
+    if (!pts) throw new ToolError(`No National Weather Service forecast covers ${label}; NWS forecasts cover the US and its territories only.`);
+    const P = pts.properties;
+    const tz = P.timeZone;
+    const [grid, text] = await Promise.all([nwsJson(P.forecastGridData), nwsJson(P.forecast).catch(() => null)]);
+    if (!grid) throw new ToolError("The NWS forecast grid for this point is unavailable right now; try again shortly.");
+    const G = grid.properties;
+
+    const localDate = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: tz });
+    const series = (name) => (G[name]?.values || []).map((v) => {
+      const [start, dur] = v.validTime.split("/");
+      const t0 = Date.parse(start);
+      return { t0, hours: durHours(dur), value: v.value };
+    }).filter((v) => v.value !== null && v.value !== undefined);
+
+    const daily = new Map(); // "date|element" -> {value, hours}
+    const put = (date, element, value, combine, hours = 0) => {
+      const key = `${date}|${element}`;
+      const cur = daily.get(key);
+      daily.set(key, cur ? { value: combine(cur.value, value), hours: cur.hours + hours } : { value, hours });
+    };
+    for (const v of series("maxTemperature")) put(localDate(v.t0 + (v.hours / 2) * 36e5), "TMAX", v.value, Math.max);
+    for (const v of series("minTemperature")) put(localDate(v.t0 + v.hours * 36e5 - 1), "TMIN", v.value, Math.min);
+    for (const [name, el] of [["quantitativePrecipitation", "PRCP"], ["snowfallAmount", "SNOW"]]) {
+      for (const v of series(name)) {
+        const h = Math.max(1, Math.round(v.hours));
+        for (let i = 0; i < h; i++) put(localDate(v.t0 + i * 36e5), el, v.value / h, (a, b) => a + b, 1);
+      }
+    }
+    for (const [name, el] of [["probabilityOfPrecipitation", "POP"], ["windGust", "GUST"]]) {
+      for (const v of series(name)) {
+        const h = Math.max(1, Math.round(v.hours));
+        for (let i = 0; i < h; i++) put(localDate(v.t0 + i * 36e5), el, v.value, Math.max);
+      }
+    }
+    const units = { TMAX: "degC", TMIN: "degC", PRCP: "mm", SNOW: "mm", POP: "%", GUST: "km/h" };
+    const rows = [...daily.entries()]
+      .map(([k, v]) => {
+        const [date, element] = k.split("|");
+        const partial = (element === "PRCP" || element === "SNOW") && v.hours < 24;
+        return { date, element, value: Math.round(v.value * 10) / 10, units: units[element], partial_day: partial };
+      })
+      .sort((a, b) => a.date.localeCompare(b.date) || a.element.localeCompare(b.element));
+
+    const key = stationRow ? stationRow.id : label;
+    await q(`CREATE TABLE IF NOT EXISTS forecast (station VARCHAR, date DATE, element VARCHAR, value DOUBLE,
+               units VARCHAR, partial_day BOOLEAN, issued TIMESTAMP)`);
+    await q(`DELETE FROM forecast WHERE station = ${sqlString(key)}`);
+    const issued = G.updateTime ? `TIMESTAMP '${G.updateTime.slice(0, 19).replace("T", " ")}'` : "NULL";
+    if (rows.length) {
+      await q(`INSERT INTO forecast VALUES ${rows.map((r) =>
+        `(${sqlString(key)}, DATE '${r.date}', ${sqlString(r.element)}, ${r.value}, ${sqlString(r.units)}, ${r.partial_day}, ${issued})`).join(", ")}`);
+    }
+
+    // Grid cell center, and its distance from the station.
+    const ring = grid.geometry?.coordinates?.[0] || [];
+    const cLon = ring.length ? ring.slice(0, -1).reduce((a, c) => a + c[0], 0) / (ring.length - 1) : null;
+    const cLat = ring.length ? ring.slice(0, -1).reduce((a, c) => a + c[1], 0) / (ring.length - 1) : null;
+    const km = cLat === null ? null : 2 * 6371 * Math.asin(Math.sqrt(
+      Math.sin(((cLat - point.lat) * Math.PI) / 360) ** 2 +
+      Math.cos((point.lat * Math.PI) / 180) * Math.cos((cLat * Math.PI) / 180) * Math.sin(((cLon - point.lon) * Math.PI) / 360) ** 2));
+
+    return {
+      for: label,
+      station: stationRow ? stationRow.id : undefined,
+      nws_grid: `${P.gridId} ${P.gridX},${P.gridY}`,
+      grid_cell_center: cLat === null ? undefined : { lat: Math.round(cLat * 1e4) / 1e4, lon: Math.round(cLon * 1e4) / 1e4, km_from_point: Math.round(km * 10) / 10 },
+      grid_elevation_m: G.elevation?.value != null ? Math.round(G.elevation.value) : undefined,
+      station_elevation_m: stationRow?.elev_m ?? undefined,
+      issued: G.updateTime,
+      time_zone: tz,
+      table: `forecast(station, date, element, value, units, partial_day, issued) with station = '${key}'`,
+      daily: rows,
+      text_forecast: (text?.properties?.periods || []).slice(0, 14).map((p) => `${p.name}: ${p.temperature}°${p.temperatureUnit}, ${p.shortForecast}`),
+      source: `NWS National Digital Forecast Database via ${P.forecastGridData}`,
+    };
+  }
+
   // Read-only SQL over the session tables. The CSP in index.html is what
   // really stops the database from reaching other hosts; this guard keeps the
   // model on SELECT-style queries over loaded data and gives a clear error.
@@ -667,6 +796,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     loadSeries,
     loadArea,
     loadRecords,
+    getForecast,
     runSql,
     select,
     stats: () => ({ ...stats }),

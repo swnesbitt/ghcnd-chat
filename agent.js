@@ -11,6 +11,7 @@ How to work:
 2. Load data into the table obs:
    - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
    - load_series for long records at one or a few stations (trends, climatologies, records at a site).
+   - get_forecast for the National Weather Service forecast (about 7 days) at a station, place or point (US only). It fills table forecast with daily TMAX, TMIN, PRCP, SNOW in obs units plus POP (%) and GUST (km/h), and returns the NWS text forecast. To put a forecast in context, compare it with the station's records (load_records) or its history for those calendar days (load_series).
    - load_records for record extremes over an area or a long period ("the most snow in a day in New York", "the coldest February temperature in Illinois"): it loads precomputed all-time and monthly records for every station in the area, so no raw data is needed.
 3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
 4. make_chart when a picture helps, with a Vega-Lite spec. For US maps, set basemap (state or county outlines, optionally zoomed to one state) and plot stations with longitude/latitude encodings, or color counties or states with basemap.color_by. The data comes from the chart's own SQL; do not put data or URLs in the spec.
@@ -37,6 +38,8 @@ SQL is DuckDB, not SQLite:
 - One statement per call, no trailing semicolon needed.
 
 The records table (from load_records): one row per station, element, month and stat. month 1-12 is a calendar month and month 0 is all months; stat is 'max' (all elements) or 'min' (TMAX, TMIN, TAVG); value is in obs units; runner_up is the station's second-highest (or second-lowest) value for that month; n_years and n_days are how much data the station has for that month. Restrict to the area with JOIN area_stations USING (id). Records cover data through data_through; for anything after that, check the recent period with load_area.
+
+The forecast table (from get_forecast): forecast(station, date, element, value, units, partial_day, issued). It is the NDFD 2.5 km grid cell containing the station, not a forecast for the gauge itself; mention the issue time and that grid-cell values can differ from a station's, especially with elevation differences. TMIN is dated by the morning it occurs, matching co-op practice; partial_day marks today's PRCP/SNOW covering only the remaining hours.
 
 Judging records: single-station extremes are often data errors. Before naming one, list the top 5, and treat as suspect a value far beyond its runner_up (e.g., more than double, or a snowfall or precipitation record whose runner_up is near zero), a station with few years of data (n_years under 10), or a value far above other stations in the same month. Say which you set aside and why, and note that official state records are vetted by NOAA's State Climate Extremes Committee and may differ.
 
@@ -145,6 +148,23 @@ export const TOOL_SCHEMAS = [
           lon: { type: "number" },
           radius_km: { type: "number" },
           stations: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_forecast",
+      description:
+        "Get the National Weather Service forecast (National Digital Forecast Database, about 7 days) for the 2.5 km grid cell containing a GHCN station, a place, or a lat/lon. US only. Loads daily values into table forecast and returns them with the NWS text forecast.",
+      parameters: {
+        type: "object",
+        properties: {
+          station: { type: "string", description: "GHCN-Daily station ID, e.g., 'USC00118740'" },
+          place: { type: "string", description: "Town or city with state, e.g., 'Champaign, IL'" },
+          lat: { type: "number" },
+          lon: { type: "number" },
         },
       },
     },

@@ -103,20 +103,20 @@ def main() -> int:
 
             steps = page.eval_on_selector_all(".step summary", "s => s.map(x => x.textContent)")
             print("steps:", json.dumps(steps, indent=1))
-            if len(steps) < 17:
+            if len(steps) < 21:
                 print("LOG:", page.text_content("#log"), "\nBANNER:", page.text_content("#banner"))
                 print("CONSOLE:", "\n".join(console[-20:]))
                 return 1
-            check(len(steps) == 17, "seventeen tool steps shown")
+            check(len(steps) == 21, "twenty-one tool steps shown")
             check(not any(s.endswith("(failed)") for s in steps[:6]), "search, loads, area load and queries succeeded")
             check(steps[6].endswith("(failed)") and steps[7].endswith("(failed)"), "forbidden SQL refused")
             check(not steps[8].endswith("(failed)"), "messy layered spec (string, nulls) still renders")
             check(not steps[9].endswith("(failed)"), "histogram without y renders")
             check(not steps[10].endswith("(failed)"), "chart step succeeded")
             n_marks = page.locator(".chart svg.marks, .chart canvas.marks").count()
-            if n_marks != 5:
+            if n_marks != 7:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
-            check(n_marks == 5, "all five charts rendered")
+            check(n_marks == 7, "all seven charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
             ans = page.text_content(".answer table")
@@ -147,11 +147,38 @@ def main() -> int:
             hist = page.evaluate("[...document.querySelectorAll('.chart')][1].querySelector('svg.marks').textContent")
             check("Count" in hist, "histogram got a count axis")
             check(not steps[15].endswith("(failed)") and not steps[16].endswith("(failed)"), "map steps succeeded")
-            paths = page.evaluate("[...document.querySelectorAll('.chart')].slice(3).map(c => c.querySelectorAll('svg.marks path').length)")
+            paths = page.evaluate("[...document.querySelectorAll('.chart')].slice(3, 5).map(c => c.querySelectorAll('svg.marks path').length)")
             print("map paths:", paths)
             check(len(paths) == 2 and all(n >= 100 for n in paths), "both maps draw Illinois's 102 counties")
             for i in (3, 4):
                 page.locator(".chart").nth(i).screenshot(path=str(out / f"map-{i}.png"))
+            check(not steps[17].endswith("(failed)") and not steps[18].endswith("(failed)"), "scatter steps succeeded")
+            xaxes = page.evaluate("""[...document.querySelectorAll('.chart')].slice(5).map(c =>
+                [...c.querySelectorAll('svg.marks [aria-label^="X-axis"]')].map(a => a.getAttribute('aria-label')).join(' | '))""")
+            print("x axes:", xaxes)
+            check("values from 19" in xaxes[0] and "from 0 " not in xaxes[0], "year scatter axis starts near the data, not at year 0")
+            check("utc scale" in xaxes[1] and "2024" in xaxes[1], "date column drawn on a UTC time axis")
+            for i in (5, 6):
+                page.locator(".chart").nth(i).screenshot(path=str(out / f"scatter-{i}.png"))
+
+            # Copy log from a failed step: has the question, calls and errors, never the key.
+            ctx.grant_permissions(["clipboard-read", "clipboard-write"])
+            failed_step = page.locator(".step.failed").first
+            failed_step.locator("summary").click()
+            failed_step.locator(".copy-log button").click()
+            page.wait_for_function("[...document.querySelectorAll('.copy-log button')].some(b => b.textContent === 'Log copied')")
+            copied = page.evaluate("navigator.clipboard.readText()")
+            print("copied log head:", copied[:300].replace("\n", " / "))
+            check("GHCN-Daily Chat log" in copied and "What were the ten wettest years" in copied
+                  and "run_sql failed" in copied and "read_csv" in copied, "copied log has question, calls and errors")
+            check("sk_test" not in copied, "copied log never includes the Lumen key")
+            fc = json.loads(tool_out[19])
+            print("forecast:", fc.get("for"), fc.get("nws_grid"), fc.get("grid_cell_center"), fc.get("issued"))
+            print("  daily TMAX/TMIN:", [(r["date"], r["element"], r["value"]) for r in fc.get("daily", []) if r["element"] in ("TMAX", "TMIN")][:8])
+            print("  text:", fc.get("text_forecast", [])[:3])
+            check(fc.get("nws_grid", "").startswith("ILX") and fc["grid_cell_center"]["km_from_point"] < 2.5
+                  and sum(r["element"] == "TMAX" for r in fc["daily"]) >= 5, "forecast for Champaign 3S from its NDFD grid cell")
+            check("TMAX" in tool_out[20] and "error" not in tool_out[20], "forecast table queryable")
             check(all("reasoning_content" not in m for m in last), "reasoning fields stripped")
             for m in last:
                 if m["role"] == "tool":

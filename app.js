@@ -34,15 +34,108 @@ let running = null; // AbortController while a turn runs
 
 function setStatus(text) { $("status").textContent = text; }
 
+// ---------------------------------------------------------------------------
+// Diagnostic log: what happened in the current question (tool calls, results,
+// errors) plus page-level errors, so a failure can be copied and sent on.
+// It never includes the Lumen key or anything else from browser storage.
+
+const logbook = { events: [], turn: null, version: null };
+const clipText = (v, max = 4000) => {
+  const t = typeof v === "string" ? v : JSON.stringify(v);
+  return t && t.length > max ? `${t.slice(0, max)}… [${t.length - max} more characters]` : t;
+};
+const stamp = () => new Date().toISOString().slice(11, 19);
+
+function logEvent(kind, text) {
+  const entry = `[${stamp()}] ${kind}: ${clipText(text)}`;
+  (logbook.turn ? logbook.turn.entries : logbook.events).push(entry);
+  if (logbook.events.length > 200) logbook.events.splice(0, logbook.events.length - 200);
+}
+
+window.addEventListener("error", (e) => logEvent("page error", `${e.message} (${e.filename}:${e.lineno})`));
+window.addEventListener("unhandledrejection", (e) => logEvent("unhandled rejection", String(e.reason?.stack || e.reason)));
+const consoleError = console.error.bind(console);
+console.error = (...args) => {
+  logEvent("console", args.map((a) => (a instanceof Error ? a.message : typeof a === "string" ? a : clipText(a, 500))).join(" "));
+  consoleError(...args);
+};
+
+// Which build is live (written by the Pages workflow), fetched up front so
+// copying stays synchronous inside the click, as iOS Safari requires.
+fetch("version.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((v) => (logbook.version = v)).catch(() => {});
+
+function buildLog() {
+  const v = logbook.version;
+  const t = logbook.turn;
+  const lines = [
+    "GHCN-Daily Chat log",
+    `Copied: ${new Date().toISOString()} (${new Date().toLocaleString()})`,
+    `Page: ${location.origin}${location.pathname}${v ? ` (build ${v.commit}, ${v.built_at})` : ""}`,
+    `Lumen: ${CONFIG.lumenBaseUrl}   Model: ${$("model")?.value || "none"}`,
+    `Browser: ${navigator.userAgent}`,
+  ];
+  if (t) {
+    lines.push("", `Question (${t.started}): ${t.question}`, "", ...t.entries);
+  }
+  if (logbook.events.length) lines.push("", "Page events:", ...logbook.events.slice(-60));
+  return lines.join("\n");
+}
+
+function copyText(text) {
+  // Fallback for browsers without the async clipboard API: a selected textarea.
+  const legacy = () => {
+    const ta = el("textarea", { value: text, readOnly: true });
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+    document.body.append(ta);
+    ta.focus();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  };
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text).then(() => true, () => legacy());
+  return Promise.resolve(legacy());
+}
+
+function copyLogButton() {
+  const wrap = el("div", { className: "copy-log" });
+  const btn = el("button", { type: "button", className: "quiet", textContent: "Copy log" });
+  btn.addEventListener("click", () => {
+    const text = buildLog();
+    copyText(text).then((ok) => {
+      if (ok) {
+        btn.textContent = "Log copied";
+        setTimeout(() => (btn.textContent = "Copy log"), 2500);
+        return;
+      }
+      // Could not copy: show the log so it can be selected by hand.
+      if (!wrap.querySelector("textarea")) {
+        const ta = el("textarea", { className: "log-text", value: text, readOnly: true, rows: 8 });
+        ta.setAttribute("aria-label", "Diagnostic log");
+        wrap.append(el("p", { className: "fine", textContent: "Copying isn't available here. Select the log below and copy it." }), ta);
+        ta.focus();
+        ta.select();
+      }
+    });
+  });
+  wrap.append(btn);
+  return wrap;
+}
+
 function showBanner(text) {
   const b = $("banner");
-  b.textContent = text;
+  b.replaceChildren();
   b.hidden = !text;
+  if (!text) return;
+  logEvent("banner", text);
+  b.append(el("span", { textContent: text }), copyLogButton());
 }
 
 // The page's CSP blocks any host not listed in connect-src. Say so plainly
 // when that host is the configured Lumen server.
 document.addEventListener("securitypolicyviolation", (e) => {
+  logEvent("blocked by Content-Security-Policy", `${e.violatedDirective} ${e.blockedURI}`);
   const lumenOrigin = new URL(CONFIG.lumenBaseUrl).origin;
   if (e.blockedURI && e.blockedURI.startsWith(lumenOrigin)) {
     showBanner(`The page's Content-Security-Policy blocks ${lumenOrigin}. Add it to connect-src in index.html.`);
@@ -203,7 +296,9 @@ function addAnswer(markdown) {
 }
 
 function addError(text) {
-  $("log").append(el("p", { className: "answer error-text", textContent: text }));
+  logEvent("error", text);
+  $("log").append(el("div", { className: "answer error-block" },
+    el("p", { className: "error-text", textContent: text }), copyLogButton()));
   scrollToEnd();
 }
 
@@ -233,6 +328,7 @@ function stepLabel(name, args = {}) {
       return `Loaded all stations ${areaLabel(args) || ""}, ${(args.elements || ["TMAX"]).join(", ")}, ${when}`;
     }
     case "load_records": return `Loaded records ${areaLabel(args)}`.trim();
+    case "get_forecast": return `Got the NWS forecast for ${args.station || args.place || `${args.lat}, ${args.lon}`}`;
     case "run_sql": return "Ran a query";
     case "make_chart": return args.title ? `Drew a chart: ${args.title}` : "Drew a chart";
     default: return `Called ${name}`;
@@ -244,6 +340,7 @@ const steps = new Map();
 function onStep(s) {
   if (s.type === "thinking") setStatus("Thinking");
   if (s.type === "tool_start") {
+    logEvent(`call ${s.name}`, s.args);
     setStatus(stepLabel(s.name, s.args || {}));
     const details = el("details", { className: "step running" },
       el("summary", { textContent: stepLabel(s.name, s.args || {}) }));
@@ -256,6 +353,7 @@ function onStep(s) {
     if (!details) return;
     details.classList.remove("running");
     const failed = s.result && s.result.error;
+    logEvent(failed ? `${s.name} failed` : `${s.name} result`, failed ? s.result.error : s.result);
     if (failed) {
       details.classList.add("failed");
       details.querySelector("summary").textContent += " (failed)";
@@ -269,6 +367,7 @@ function onStep(s) {
       el("pre", { textContent: call || "" }),
       el("pre", { textContent: result.length > 6000 ? result.slice(0, 6000) + "\n…" : result })
     );
+    if (failed) details.append(copyLogButton());
     setStatus("Thinking");
   }
 }
@@ -346,19 +445,6 @@ function normalizeSpec(raw) {
   if (!spec.mark && !composite) {
     throw new Error(`The spec needs a "mark" (or "layer"). Example: ${CHART_EXAMPLE}`);
   }
-  // Years encoded as numbers get thousands separators ("2,020"); format them plainly.
-  const fixYears = (node) => {
-    if (!node || typeof node !== "object") return;
-    for (const ch of ["x", "y", "x2", "y2"]) {
-      const enc = node.encoding?.[ch];
-      if (enc && /(^|_)(year|yr)$/i.test(enc.field || "") && (enc.type === "quantitative" || !enc.type) && enc.axis !== null) {
-        enc.axis = { format: "d", ...(enc.axis || {}) };
-      }
-    }
-    for (const k of ["layer", "concat", "hconcat", "vconcat"]) if (Array.isArray(node[k])) node[k].forEach(fixYears);
-    if (node.spec) fixYears(node.spec);
-  };
-  fixYears(spec);
 
   // A bar, line or area mark without y draws full-height bands (a histogram
   // whose count was left out looks like a wall of bars). Add the count when x
@@ -506,6 +592,56 @@ async function buildMap(spec, rows, basemap) {
   };
 }
 
+// Sensible time and temperature axes, decided from the rows themselves:
+// ISO date strings become a UTC time axis (a quantitative one cannot read
+// them, and local time would shift dates by a day); year columns get plain
+// labels (1990, not 1,990) and no forced zero (otherwise a scatter of years
+// starts at year 0); temperature columns on point and line marks drop the
+// forced zero too. Anything the spec sets explicitly is left alone.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}/;
+const TIME_NAME = /(^|_)(year|yr|yyyy|season|decade)s?$/i;
+const TEMP_NAME = /(tmax|tmin|tavg|temp|_f$|_c$|deg_?[fc]$|high|low|dewpoint)/i;
+const NO_ZERO_MARKS = new Set(["point", "circle", "square", "tick", "line", "trail", "rule", "text"]);
+
+function fixAxes(spec, rows) {
+  const sample = rows.slice(0, 200);
+  const values = (field) => sample.map((r) => r[field]).filter((v) => v !== null && v !== undefined);
+  const walk = (node, inherited = {}, inheritedMark) => {
+    if (!node || typeof node !== "object") return;
+    const mark = node.mark ?? inheritedMark ?? (Array.isArray(node.layer) ? node.layer.find((l) => l?.mark)?.mark : undefined);
+    const markType = typeof mark === "string" ? mark : mark?.type;
+    if (node.encoding) {
+      for (const ch of ["x", "y", "x2", "y2"]) {
+        const enc = node.encoding[ch];
+        if (!enc?.field || enc.aggregate || enc.bin) continue;
+        const v = values(enc.field);
+        if (!v.length) continue;
+        const free = !enc.type || enc.type === "quantitative" || enc.type === "temporal";
+        if (free && v.every((x) => typeof x === "string" && ISO_DATE.test(x))) {
+          enc.type = "temporal";
+          enc.scale = { type: "utc", ...(enc.scale || {}) };
+          if (enc.axis !== null) enc.axis = { format: "%Y-%m-%d", formatType: "utc", ...(enc.axis || {}) };
+          continue;
+        }
+        const numeric = v.every((x) => typeof x === "number");
+        if (!numeric || !(enc.type === "quantitative" || !enc.type)) continue;
+        if (TIME_NAME.test(enc.field) || v.every((x) => Number.isInteger(x) && x >= 1700 && x <= 2100) && /year|yr/i.test(enc.field)) {
+          enc.type = "quantitative";
+          enc.scale = { zero: false, ...(enc.scale || {}) };
+          if (enc.axis !== null) enc.axis = { format: "d", ...(enc.axis || {}) };
+        } else if (TEMP_NAME.test(enc.field) && NO_ZERO_MARKS.has(markType)) {
+          enc.scale = { zero: false, ...(enc.scale || {}) };
+        }
+      }
+    }
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(node[k])) node[k].forEach((l) => walk(l, { ...inherited, ...(node.encoding || {}) }, mark));
+    }
+    if (node.spec) walk(node.spec, node.encoding, mark);
+  };
+  walk(spec);
+}
+
 async function makeChart(args) {
   const { sql, title } = args;
   // Accept the spellings models tend to use for the spec.
@@ -539,6 +675,7 @@ async function makeChart(args) {
   if (missing.length) {
     return { error: `The spec uses field(s) ${missing.join(", ")} but the query returns columns ${columns.join(", ")}.` };
   }
+  if (spec && !basemap) fixAxes(spec, rows);
   if (basemap) {
     try {
       spec = await buildMap(spec, rows, basemap);
@@ -615,6 +752,7 @@ async function ask(text) {
   $("prompt").value = "";
   const before = messages.length;
   messages.push({ role: "user", content: text });
+  logbook.turn = { question: text, started: new Date().toISOString(), entries: [] };
   running = new AbortController();
   setRunning(true);
   try {
@@ -624,14 +762,17 @@ async function ask(text) {
       load_series: (a) => g.loadSeries(a),
       load_area: (a) => g.loadArea(a),
       load_records: (a) => g.loadRecords(a),
+      get_forecast: (a) => g.getForecast(a),
       run_sql: (a) => g.runSql(a),
       make_chart: (a) => makeChart(a),
     };
     const answer = await runTurn({ lumen, model, messages, handlers, onStep, signal: running.signal });
+    logEvent("answer", answer);
     addAnswer(answer);
   } catch (err) {
     // Drop the unfinished turn so the next request is a valid conversation.
     messages.length = before;
+    logEvent("turn failed", err?.stack || err?.message || String(err));
     if (running.signal.aborted) addError("Stopped. This question was not kept in the conversation.");
     else if (!handleLumenError(err)) addError(err.message || String(err));
   } finally {

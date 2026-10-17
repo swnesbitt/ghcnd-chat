@@ -55,6 +55,7 @@ jobs:
           mkdir _site
           cp -r index.html styles.css app.js agent.js ghcnd.js format.js config.js lumen-oauth.js station_index.parquet places.parquet img geo _site/
           if [ -d records ]; then cp -r records _site/; fi
+          echo "{\"commit\": \"${GITHUB_SHA::7}\", \"built_at\": \"$(date -u +%Y-%m-%dT%H:%MZ)\"}" > _site/version.json
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

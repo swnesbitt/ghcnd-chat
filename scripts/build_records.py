@@ -9,8 +9,8 @@ month, and writes one small parquet file per US state or Canadian province
 the browser fetches only the region a question is about.
 
 It reads all of NOAA's by_year parquet files (about 8.5 GB for the six
-elements), which takes roughly 10 to 20 minutes, so the Pages workflow caches
-the output and rebuilds it weekly.
+elements) in batches of whole years so memory stays flat; it takes roughly 30
+to 60 minutes on a GitHub runner and runs monthly (.github/workflows/records.yml).
 
     pip install duckdb
     python scripts/build_records.py records [--elements SNOW,TMAX] [--index station_index.parquet]
@@ -41,7 +41,7 @@ SPEC = {
 }
 
 
-def list_keys(prefix: str) -> list[str]:
+def list_keys(prefix: str) -> list[tuple[str, int]]:
     keys, token = [], None
     while True:
         q = {"list-type": "2", "prefix": prefix}
@@ -49,11 +49,59 @@ def list_keys(prefix: str) -> list[str]:
             q["continuation-token"] = token
         with urllib.request.urlopen(BUCKET + "?" + urllib.parse.urlencode(q), timeout=120) as r:
             xml = r.read().decode()
-        keys += re.findall(r"<Key>([^<]+\.parquet)</Key>", xml)
+        keys += [(k, int(n)) for k, n in re.findall(r"<Key>([^<]+\.parquet)</Key>.*?<Size>(\d+)</Size>", xml)]
         m = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", xml)
         if not m:
             return keys
         token = m.group(1)
+
+
+def batches(files: list[tuple[str, int, int]], target_bytes: int) -> list[list[str]]:
+    """Group (key, size, year) into runs of whole years of about target_bytes each."""
+    by_year: dict[int, list[tuple[str, int]]] = {}
+    for key, size, year in files:
+        by_year.setdefault(year, []).append((key, size))
+    out, cur, cur_bytes = [], [], 0
+    for year in sorted(by_year):
+        size = sum(s for _, s in by_year[year])
+        if cur and cur_bytes + size > target_bytes:
+            out.append(cur)
+            cur, cur_bytes = [], 0
+        cur += [k for k, _ in by_year[year]]
+        cur_bytes += size
+    if cur:
+        out.append(cur)
+    return out
+
+
+# Per batch of whole years: per station and month (and month 0 = all months),
+# the two highest and two lowest values, the dates of the extremes, and the
+# number of years and days. Batches hold disjoint years, so they fold together
+# exactly: top-2 of the union is top-2 of the partial top-2s, counts add.
+BATCH_SQL = """
+    WITH o AS (
+        SELECT ID, DATE, DATA_VALUE AS v, substr(DATE, 5, 2)::TINYINT AS m
+        FROM read_parquet({files}, hive_partitioning = false)
+        WHERE Q_FLAG IS NULL AND DATA_VALUE IS NOT NULL
+    )
+    SELECT ID AS id, coalesce(m, 0)::TINYINT AS month,
+           max(v, 2) AS top_max, arg_max(DATE, v) AS dmax,
+           min(v, 2) AS top_min, arg_min(DATE, v) AS dmin,
+           count(DISTINCT substr(DATE, 1, 4))::INTEGER AS n_years, count(*)::BIGINT AS n_days
+    FROM o GROUP BY GROUPING SETS ((ID, m), (ID))
+"""
+
+FOLD_SQL = """
+    CREATE OR REPLACE TABLE acc AS
+    SELECT id, month,
+           list_slice(list_sort(flatten(list(top_max)), 'DESC'), 1, 2) AS top_max,
+           arg_max(dmax, top_max[1]) AS dmax,
+           list_slice(list_sort(flatten(list(top_min)), 'ASC'), 1, 2) AS top_min,
+           arg_min(dmin, top_min[1]) AS dmin,
+           sum(n_years)::INTEGER AS n_years, sum(n_days)::BIGINT AS n_days
+    FROM (SELECT * FROM acc UNION ALL SELECT * FROM batch)
+    GROUP BY id, month
+"""
 
 
 def main() -> None:
@@ -61,45 +109,51 @@ def main() -> None:
     ap.add_argument("out", nargs="?", default="records")
     ap.add_argument("--elements", default=",".join(SPEC))
     ap.add_argument("--index", default="station_index.parquet")
+    ap.add_argument("--years", help="limit to a year range for testing, e.g. 1990-2005")
+    ap.add_argument("--batch-mb", type=int, default=400, help="compressed MB of files per batch")
+    ap.add_argument("--memory", default="9GB", help="DuckDB memory limit (GitHub runners have 16 GB)")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     elements = [e.strip().upper() for e in a.elements.split(",") if e.strip()]
+    y0, y1 = (int(x) for x in a.years.split("-")) if a.years else (0, 9999)
 
     con = duckdb.connect()
-    con.sql("INSTALL httpfs; LOAD httpfs; SET preserve_insertion_order = false;")
+    con.sql(f"""INSTALL httpfs; LOAD httpfs;
+               SET preserve_insertion_order = false;
+               SET memory_limit = '{a.memory}';
+               SET temp_directory = '{out.resolve()}.spill';""")
     con.sql("""CREATE TABLE rec (id VARCHAR, element VARCHAR, month TINYINT, stat VARCHAR,
                                  value DOUBLE, date DATE, runner_up DOUBLE, n_years SMALLINT, n_days INTEGER)""")
 
     keys = list_keys("parquet/by_year/")
     for el in elements:
         scale, stats = SPEC[el]
-        urls = [BUCKET + k for k in keys if f"/ELEMENT={el}/" in k]
+        files = []
+        for key, size in keys:
+            m = re.search(rf"YEAR=(\d+)/ELEMENT={el}/", key)
+            if m and y0 <= int(m.group(1)) <= y1:
+                files.append((BUCKET + key, size, int(m.group(1))))
         t0 = time.time()
-        # One pass per element: monthly groups and the all-time group together.
-        con.sql(f"""
-            CREATE OR REPLACE TEMP TABLE agg AS
-            WITH o AS (
-                SELECT ID, DATE, DATA_VALUE AS v, substr(DATE, 5, 2)::TINYINT AS m
-                FROM read_parquet({urls}, hive_partitioning = false)
-                WHERE Q_FLAG IS NULL AND DATA_VALUE IS NOT NULL
-            )
-            SELECT ID AS id, coalesce(m, 0) AS month,
-                   max(v) AS vmax, arg_max(DATE, v) AS dmax, max(v, 2)[2] AS vmax2,
-                   min(v) AS vmin, arg_min(DATE, v) AS dmin, min(v, 2)[2] AS vmin2,
-                   count(DISTINCT substr(DATE, 1, 4)) AS n_years, count(*) AS n_days
-            FROM o GROUP BY GROUPING SETS ((ID, m), (ID))
-        """)
+        con.sql("""CREATE OR REPLACE TABLE acc (id VARCHAR, month TINYINT, top_max BIGINT[], dmax VARCHAR,
+                                                top_min BIGINT[], dmin VARCHAR, n_years INTEGER, n_days BIGINT)""")
+        groups = batches(files, a.batch_mb * 1_000_000)
+        for i, group in enumerate(groups, 1):
+            con.sql("CREATE OR REPLACE TEMP TABLE batch AS " + BATCH_SQL.format(files=group))
+            con.sql(FOLD_SQL)
+            con.sql("DROP TABLE batch")
+            print(f"  {el} batch {i}/{len(groups)} ({len(group)} files), {time.time() - t0:.0f} s", flush=True)
         for stat in stats:
-            v, d, v2 = ("vmax", "dmax", "vmax2") if stat == "max" else ("vmin", "dmin", "vmin2")
+            top, d = ("top_max", "dmax") if stat == "max" else ("top_min", "dmin")
             con.sql(f"""
                 INSERT INTO rec
-                SELECT id, '{el}', month, '{stat}', round({v} * {scale}, 1),
-                       strptime({d}, '%Y%m%d')::DATE, round({v2} * {scale}, 1), n_years, n_days
-                FROM agg
+                SELECT id, '{el}', month, '{stat}', round({top}[1] * {scale}, 1),
+                       strptime({d}, '%Y%m%d')::DATE, round({top}[2] * {scale}, 1), n_years, n_days
+                FROM acc
             """)
+        con.sql("DROP TABLE acc")
         n = con.sql(f"SELECT count(*) FROM rec WHERE element = '{el}'").fetchone()[0]
-        print(f"{el}: {len(urls)} files, {n} record rows, {time.time() - t0:.0f} s", flush=True)
+        print(f"{el}: {len(files)} files in {len(groups)} batches, {n} record rows, {time.time() - t0:.0f} s", flush=True)
 
     # Regions: state or province where NOAA gives one, otherwise the country.
     con.sql(f"""
