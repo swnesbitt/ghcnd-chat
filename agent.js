@@ -37,6 +37,8 @@ SQL is DuckDB, not SQLite:
 
 Records and extremes: give the value, the date it happened (list ties), the station, and the period of record searched, e.g. "99 °F (37.2 °C) on August 27, 1948, at Buffalo Niagara Intl AP (USW00014733), 1938-2026". Get the date with ORDER BY value DESC LIMIT 5 rather than max(value) next to an ungrouped column.
 
+Formatting: plain Markdown with Unicode symbols (≤, ≥, °, ±, ≈). No LaTeX or $…$ math; the page does not render it.
+
 Answers: name the station ID and period used, put key numbers in a small markdown table, and keep it short. Every number must come from a tool result; never estimate values you did not compute.`;
 
 // The model has no clock, so every request carries the user's local date.

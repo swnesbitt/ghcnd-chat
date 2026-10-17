@@ -24,7 +24,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-SITE_FILES = ["index.html", "styles.css", "app.js", "agent.js", "ghcnd.js", "config.js",
+SITE_FILES = ["index.html", "styles.css", "app.js", "agent.js", "ghcnd.js", "format.js", "config.js",
               "lumen-oauth.js", "station_index.parquet", "places.parquet"]
 MOCK = "http://localhost:5001"
 
@@ -119,6 +119,8 @@ def main() -> int:
             check(n_marks == 5, "all five charts rendered")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
+            ans = page.text_content(".answer table")
+            check("≤ 35" in ans and "$" not in ans, "LaTeX inequality rendered as ≤")
             check(page.locator("#records li:not(.axis)").count() == 5, "rail shows three series and two area loads")
             print("downloaded:", page.text_content("#downloaded"))
 

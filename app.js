@@ -3,6 +3,7 @@
 import { createLumenClient, LumenError } from "./lumen-oauth.js";
 import { CONFIG } from "./config.js";
 import { runTurn } from "./agent.js";
+import { cleanModelText } from "./format.js";
 import { marked } from "https://cdn.jsdelivr.net/npm/marked@18.1.1/+esm";
 import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.4.17/+esm";
 
@@ -195,7 +196,7 @@ function addUser(text) {
 
 function addAnswer(markdown) {
   const div = el("div", { className: "answer" });
-  div.innerHTML = DOMPurify.sanitize(marked.parse(markdown || "(no answer)"));
+  div.innerHTML = DOMPurify.sanitize(marked.parse(cleanModelText(markdown) || "(no answer)"));
   for (const a of div.querySelectorAll("a")) a.rel = "noopener noreferrer";
   $("log").append(div);
   scrollToEnd();

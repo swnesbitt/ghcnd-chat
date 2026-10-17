@@ -91,7 +91,7 @@ FINAL = """The wettest years at **CHAMPAIGN 3S** (`USC00118740`) since 1990, cou
 
 | Year | Total (mm) |
 |---|---|
-| (see query result) | |
+| Frequency $\\le$ 35 °F | 12 of 124 |
 
 <img src=x onerror="document.body.dataset.xss='1'">"""
 
