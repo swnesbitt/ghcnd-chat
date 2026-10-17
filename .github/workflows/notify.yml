@@ -57,6 +57,7 @@ jobs:
         if: inputs.subscription == ''
         env:
           NOTIFY_CONFIG: ${{ secrets.NOTIFY_CONFIG }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
         run: python3 scripts/send_almanac.py --check
 
       - uses: actions/setup-python@v7

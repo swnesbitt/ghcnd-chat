@@ -478,6 +478,9 @@ def main() -> int:
                 todo.append(s)
 
     if a.check:
+        if todo and not os.environ.get("SMTP_HOST", "").strip():
+            log("::notice::Due, but no mail server is set up yet (Daily email tab > Mail server); not sending.")
+            todo = []
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
             with open(out, "a") as f:
