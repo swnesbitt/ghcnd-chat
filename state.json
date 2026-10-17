@@ -1,0 +1,13 @@
+{
+  "subscriptions": {
+    "champaign-3s": {
+      "attempts": 0,
+      "issue": 1,
+      "last_sent": "2026-10-17",
+      "last_sent_at": "2026-10-17T17:11:09+00:00",
+      "station": "USC00118740",
+      "status": "sent"
+    }
+  },
+  "updated": "2026-10-17T17:11:09+00:00"
+}
