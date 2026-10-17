@@ -84,6 +84,10 @@ def main() -> int:
             now = page.text_content(".alm-now")
             print("now table:", " | ".join(now.split()))
             check("normal 65°F" in now, "today's normal high matches NCEI (Oct 17: 65.4°F)")
+            win_rows = page.eval_on_selector_all("#alm-outlook ~ .alm-scroll tbody tr", "r => r.map(x => x.innerText.replace(/\\t/g, ' | '))")
+            print("window rows:\n  " + "\n  ".join(win_rows))
+            check(any("Oct 16" in r and "Provisional" in r and "72°F" in r for r in win_rows), "Oct 16 filled from ACIS (72°F) and marked provisional")
+            check("(provisional)" in now and "Oct 16" in now, "latest report is the provisional Oct 16")
             check("AI model" in page.text_content(".alm-ai") and "may make mistakes" in page.text_content(".alm-ai"), "AI note at the bottom")
             check(page.url.endswith("?station=USC00118740"), "URL holds the station for sharing")
             frost = page.text_content("#alm-frost + .alm-box ~ .alm-scroll") if page.locator("#alm-frost").count() else ""

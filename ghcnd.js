@@ -109,6 +109,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
              lat, lon, elev AS elev_m
       FROM 'station_index.parquet';
     CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);
+    CREATE TABLE provisional (station VARCHAR, element VARCHAR, date DATE);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
   `);
   for (const [el, e] of Object.entries(ELEMENTS)) {
@@ -436,6 +437,29 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         loaded.set(`${id}/${p.el}`, { station: id, ...summary, record_first: c.first_year, record_last: c.last_year });
       }
     }
+    // GHCN-Daily runs a few days behind; fill the newest days from ACIS.
+    let provisional = null;
+    const wantsRecent = !Number.isFinite(end_year) || end_year >= nowYear;
+    if (wantsRecent && /^(US|RQ|VQ|AQ|GQ|CQ)/.test(id)) {
+      try {
+        provisional = await fillRecent(id, plans.filter((p) => !p.skip).map((p) => p.el));
+      } catch (err) {
+        provisional = { error: `Could not reach ACIS for recent days: ${err.message}` };
+      }
+      if (provisional?.added) {
+        for (const sm of summaries) {
+          const days = provisional.by_element[sm.element];
+          if (days) {
+            sm.provisional_days = days;
+            sm.last_date = provisional.last_date[sm.element];
+            sm.source += ` + ACIS provisional through ${sm.last_date}`;
+            const k = `${id}/${sm.element}`;
+            if (loaded.has(k)) loaded.get(k).last_date = sm.last_date;
+          }
+        }
+      }
+    }
+
     const meta = toRows(await q(`SELECT name, state FROM stations WHERE id = ${sqlString(id)}`))[0];
     loaded.forEach((v) => {
       if (v.station === id) Object.assign(v, meta);
@@ -446,9 +470,66 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       name: meta?.name,
       state: meta?.state,
       results: summaries,
+      provisional: provisional?.added
+        ? `${provisional.added} recent values (${provisional.first_date} to ${provisional.last_any}) are provisional reports from the NOAA Regional Climate Centers' ACIS, not yet in GHCN-Daily; they are listed in table provisional(station, element, date).`
+        : provisional?.error,
       downloaded_mb_this_session: Math.round(stats.bytes / 1e5) / 10,
       table: "obs(station, element, date, value, m_flag, obs_time)",
     };
+  }
+
+  // ACIS (Applied Climate Information System, NOAA Regional Climate Centers)
+  // carries the same co-op and first-order stations within about a day, and
+  // accepts GHCN-Daily IDs. Values after a station's last GHCN-Daily date are
+  // added to obs in GHCN units and listed in provisional.
+  const ACIS = "https://data.rcc-acis.org/StnData";
+  const ACIS_ELEMS = { TMAX: "maxt", TMIN: "mint", PRCP: "pcpn", SNOW: "snow", SNWD: "snwd" };
+
+  async function fillRecent(id, elements) {
+    const els = elements.filter((e) => ACIS_ELEMS[e]);
+    if (!els.length) return null;
+    const last = Object.fromEntries(toRows(await q(`
+      SELECT element, strftime(max(date), '%Y-%m-%d') AS d FROM obs
+      WHERE station = ${sqlString(id)} AND element IN (${els.map(sqlString).join(", ")}) GROUP BY element`)).map((r) => [r.element, r.d]));
+    const today = new Date().toLocaleDateString("en-CA");
+    const starts = els.map((e) => last[e]).filter(Boolean).sort();
+    if (!starts.length) return null;
+    const from = new Date(Date.parse(`${starts[0]}T00:00:00Z`) + 864e5).toISOString().slice(0, 10);
+    if (from > today) return null;
+    const params = new URLSearchParams({ sid: id, sdate: from, edate: today, elems: els.map((e) => ACIS_ELEMS[e]).join(","), output: "json" });
+    const resp = await fetch(`${ACIS}?${params}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const body = await resp.json();
+    if (body.error) return null; // station not in ACIS
+    const rows = [];
+    for (const rec of body.data || []) {
+      const date = rec[0];
+      els.forEach((el, i) => {
+        if (!last[el] || date <= last[el]) return;
+        const raw = String(rec[i + 1] ?? "M").trim();
+        if (raw === "M" || raw === "S" || raw === "") return;
+        const trace = raw === "T";
+        const v = trace ? 0 : parseFloat(raw);
+        if (!Number.isFinite(v)) return;
+        // To GHCN-Daily units: degC, mm; snow and depth in whole mm.
+        const value = el === "TMAX" || el === "TMIN" ? Math.round(((v - 32) * 5) / 9 * 10) / 10
+          : el === "PRCP" ? Math.round(v * 25.4 * 10) / 10 : Math.round(v * 25.4);
+        rows.push({ el, date, value, trace });
+      });
+    }
+    if (!rows.length) return { added: 0 };
+    await q(`INSERT INTO obs VALUES ${rows.map((r) =>
+      `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}', ${r.value}, ${r.trace ? "'T'" : "NULL"}, NULL)`).join(", ")}`);
+    await q(`DELETE FROM provisional WHERE station = ${sqlString(id)}`);
+    await q(`INSERT INTO provisional VALUES ${rows.map((r) => `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}')`).join(", ")}`);
+    const by = {};
+    const lastDate = {};
+    for (const r of rows) {
+      by[r.el] = (by[r.el] || 0) + 1;
+      if (!lastDate[r.el] || r.date > lastDate[r.el]) lastDate[r.el] = r.date;
+    }
+    const dates = rows.map((r) => r.date).sort();
+    return { added: rows.length, by_element: by, last_date: lastDate, first_date: dates[0], last_any: dates[dates.length - 1] };
   }
 
   // Every station in an area for a short period, from by_year files. Those
@@ -636,7 +717,15 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
 
   async function nwsJson(url) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const resp = await fetch(url, { headers: { Accept: "application/geo+json" } });
+      let resp;
+      try {
+        resp = await fetch(url, { headers: { Accept: "application/geo+json" } });
+      } catch (err) {
+        // Network error or timeout: wait and try again, then give up clearly.
+        if (attempt === 2) throw new ToolError(`The National Weather Service API could not be reached (${err.message}).`);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
       if (resp.ok) return resp.json();
       if (resp.status === 404) return null;
       if (attempt === 2 || resp.status < 500) {

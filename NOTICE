@@ -21,3 +21,9 @@ US county boundaries: U.S. Census Bureau, 2023 Cartographic Boundary Files
 
 Map outlines: us-atlas 3.0.1 (https://github.com/topojson/us-atlas), ISC
 license, derived from U.S. Census Bureau cartographic boundary files.
+
+Recent provisional observations: NOAA Regional Climate Centers, Applied Climate
+Information System (ACIS), https://www.rcc-acis.org.
+
+Forecasts: National Weather Service API (api.weather.gov). Normals: NOAA NCEI
+U.S. Climate Normals 1991-2020.

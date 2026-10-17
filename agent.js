@@ -29,7 +29,7 @@ Data rules:
 - m_flag 'T' marks trace precipitation, stored as 0.
 - Cooperative observers report the max and min for the 24 hours ending at obs_time (e.g., '0700'); with a morning obs_time, much of a day's TMAX belongs to the previous afternoon. Mention this when ranking one day's extremes across stations.
 - TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
-- NOAA updates the data daily; the latest days may be incomplete.
+- GHCN-Daily runs a few days behind. load_series fills the newest days for US stations from ACIS (the Regional Climate Centers' database); those values are provisional and listed in table provisional(station, element, date). Say so when an answer uses them.
 
 SQL is DuckDB, not SQLite:
 - Dates: year(date), month(date), day(date), strftime(date, '%m-%d') with the date first, date_diff('day', a, b). There is no 'now'.

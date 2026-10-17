@@ -9,7 +9,8 @@
     hosts other than Lumen, the NOAA bucket, the CDN, DuckDB's extension server
     (DuckDB-WASM fetches its parquet reader from there on first use), the
     Illinois brand API (the campus footer loads its links from there), the
-    National Weather Service API (forecasts) and NCEI (1991-2020 normals). Put your
+    National Weather Service API (forecasts), NCEI (1991-2020 normals) and
+    ACIS (recent days not yet in GHCN-Daily). Put your
     Lumen origin here; it must match lumenBaseUrl in config.js. For local
     development with Lumen on http://localhost:5001, add that origin too.
   -->
@@ -17,7 +18,7 @@
     default-src 'self';
     script-src 'self' https://cdn.jsdelivr.net https://cdn.toolkit.illinois.edu 'wasm-unsafe-eval';
     worker-src 'self' blob:;
-    connect-src 'self' https://lumen.computes.illinois.edu https://noaa-ghcn-pds.s3.amazonaws.com https://api.weather.gov https://www.ncei.noaa.gov https://cdn.jsdelivr.net https://extensions.duckdb.org https://api.brand.illinois.edu;
+    connect-src 'self' https://lumen.computes.illinois.edu https://noaa-ghcn-pds.s3.amazonaws.com https://api.weather.gov https://www.ncei.noaa.gov https://data.rcc-acis.org https://cdn.jsdelivr.net https://extensions.duckdb.org https://api.brand.illinois.edu;
     img-src 'self' data: blob: https://cdn.toolkit.illinois.edu https://cdn.brand.illinois.edu;
     style-src 'self' 'unsafe-inline' https://cdn.toolkit.illinois.edu https://cdn.brand.illinois.edu https://fonts.googleapis.com;
     font-src 'self' data: https://fonts.gstatic.com https://cdn.brand.illinois.edu https://cdn.toolkit.illinois.edu;

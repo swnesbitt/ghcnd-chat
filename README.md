@@ -114,6 +114,12 @@ others (Chicago O'Hare, `USW00094846`). `load_series` therefore:
    which can happen for stations with no `by_station` files, and tells the model
    to narrow the period.
 
+GHCN-Daily runs a few days behind. For US stations, `load_series` then fills
+the newest days from ACIS, the NOAA Regional Climate Centers' database
+(`data.rcc-acis.org`, which accepts GHCN-Daily IDs and allows browser
+requests). Those values are converted to GHCN units, listed in table
+`provisional`, and labeled provisional in answers and in the almanac.
+
 Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
 (the count is reported to the model).
 
