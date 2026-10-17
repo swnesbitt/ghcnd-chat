@@ -368,6 +368,7 @@ const NARRATOR = `You write the short text boxes of a station climate almanac fo
 - "frost": 3-4 sentences on frost and freeze this season against the normal dates: what has happened so far, whether the forecast brings a frost or freeze (or could, where a forecast low is within the margin given), and how usual or unusual that timing is relative to 1991-2020 (use the percentages given); or "" if the input has no frost section.
 - "season": 3-4 sentences on how hot this summer or how cold this winter has been so far: its rank among all years on record, hot or cold extremes and day counts against the 1991-2020 average, and precipitation or snow; or "" if the input has no season section.
 - "degree_days": 2-3 sentences on year-to-date growing, heating and cooling degree days against normal and what that means for crops and energy use.
+Many stations are cooperative observers who read the thermometer once a day, often in the morning (observation_time, e.g., "0800"), so a reported high often comes from the previous afternoon. That is normal practice; do not mention it.
 Plain sentences, Unicode symbols (°, −, ≤), the units given, no LaTeX, no headings, no lists.`;
 
 async function narrate(facts) {
@@ -565,13 +566,9 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   const L = Ldate ? day(Ldate) : null;
   const T = day(D);
   const latestLabel = Ldate === addDays(D, -1) ? (historical ? "Day before" : "Yesterday") : "Latest report";
-  // Co-op observers report the 24 hours ending at their observation time; a
-  // morning reader's high mostly belongs to the previous afternoon.
+  // Co-op observers report the 24 hours ending at their observation time
+  // (often 7 or 8 a.m.); passed to the model as background only.
   const obsTime = latest ? (await g.sql(`SELECT obs_time FROM obs WHERE station = ${sq(st.id)} AND element = 'TMAX' AND obs_time IS NOT NULL AND date <= DATE ${sq(Ldate)} ORDER BY date DESC LIMIT 1`))[0]?.obs_time : null;
-  const morning = /^\d{4}$/.test(obsTime || "") && Number(obsTime) >= 400 && Number(obsTime) <= 1100;
-  const obsNote = morning
-    ? `This observer reads the thermometer at ${Number(obsTime.slice(0, 2))}:${obsTime.slice(2)} a.m., so the high reported for ${fmtDay(Ldate, { month: "short", day: "numeric" })} mostly happened the afternoon before.`
-    : null;
   const cell = (main, normalTxt, recordTxt, flag) => h("td", {},
     h("div", { className: "alm-val", text: main }),
     normalTxt ? h("div", { className: "alm-sub", text: normalTxt }) : null,
@@ -609,7 +606,6 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
         h("th", { scope: "col", text: historical ? `${fmtDay(D)} (observed)` : `Today, ${fmtDay(D)}${fc ? " (forecast)" : ""}` }))),
       h("tbody", {}, nowRows))),
     provisional.size ? h("p", { className: "fine", text: `Days after ${fmtDay(addDays([...provisional].sort()[0], -1), { month: "short", day: "numeric" })} are provisional reports from the Regional Climate Centers' ACIS; GHCN-Daily runs a few days behind and may revise them.` }) : null,
-    obsNote ? h("p", { className: "fine", text: obsNote }) : null,
     fc || historical ? null : h("p", { className: "fine", text: forecast.status === "rejected" && !/covers the US/.test(forecast.reason?.message || "")
       ? "The National Weather Service forecast could not be reached just now. Reload the page to try again."
       : "No National Weather Service forecast is available for this station." }));
@@ -620,7 +616,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     record_high: round(r.rec_hi), record_high_year: r.rec_hi_yr, record_low: round(r.rec_lo), record_low_year: r.rec_lo_yr,
     record_precip: round(r.rec_prcp, U.pd), record_precip_year: r.rec_prcp_yr, years_of_record: r.n_years,
   };
-  facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate), latest_label: latestLabel, today_forecast: fc ? pick(T) : null, today_observed: historical ? pick(T) : null, observation_time_note: obsNote };
+  facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate), latest_label: latestLabel, today_forecast: fc ? pick(T) : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
 
   // ---- 2. Past 5 and next 5 days
   const win = winDates.map(day);
@@ -1132,7 +1128,6 @@ function templateText(f, U, F) {
     if (t && isNum(t.high)) {
       parts.push(`Today's forecast high of ${F.t(t.high)} is ${t.high_class ? `${t.high_class}, against` : "compared with"} a normal of ${F.t(t.normal_high)}${isNum(t.record_high) ? `; the record for the date is ${F.t(t.record_high)} from ${t.record_high_year}` : ""}.`);
     }
-    if (n.observation_time_note) parts.push(n.observation_time_note);
     out.now = parts.join(" ");
   }
   const o = f.outlook;

@@ -27,7 +27,7 @@ Data rules:
 - obs can hold several stations and elements at once; always filter by station and element.
 - A missing day is missing, not zero. For monthly, seasonal or annual totals and means, count the days present and exclude or flag periods with poor coverage (say what threshold you used, e.g., 90% of days).
 - m_flag 'T' marks trace precipitation, stored as 0.
-- Cooperative observers report the max and min for the 24 hours ending at obs_time (e.g., '0700'); with a morning obs_time, much of a day's TMAX belongs to the previous afternoon. Mention this when ranking one day's extremes across stations.
+- Cooperative observers report the max and min for the 24 hours ending at obs_time, often in the morning, so a reported high often comes from the previous afternoon. This is normal practice; do not point it out in ordinary answers. Mention it only when it changes a conclusion, such as comparing one calendar day's extremes across stations with different observation times.
 - TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
 - GHCN-Daily runs a few days behind. load_series fills the newest days for US stations from ACIS (the Regional Climate Centers' database); those values are provisional and listed in table provisional(station, element, date). Say so when an answer uses them.
 
