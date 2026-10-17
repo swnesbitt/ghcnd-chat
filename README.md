@@ -11,9 +11,8 @@ runs in the user's browser:
   (`s3://noaa-ghcn-pds/parquet/`), which allows cross-origin reads.
 - **The agent loop** runs in the page: the model calls seven tools (find stations,
   load a station's series, load an area, load records, get the NWS forecast, run SQL,
-  draw a chart). Previously five (find stations,
-  load a long series at a station, load every station in an area for a period,
-  run SQL, draw a chart), the page runs them and sends back the results. Lumen forwards `tools` and `tool_choice` to the model backend.
+  draw a chart); the page runs them and sends back the results. Lumen forwards
+  `tools` and `tool_choice` to the model backend.
 
 ```
 browser ──PKCE──► Lumen ──► model (tool calling)
