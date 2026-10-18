@@ -234,6 +234,22 @@ def main() -> int:
             check(url.startswith(MOCK + "/oauth/authorize?") and "client_id=ghcnd-chat" in url
                   and "code_challenge_method=S256" in url, "Connect starts the PKCE flow")
             ctx2.close()
+
+            # An expired (or revoked) key: a one-click renewal that comes back to the same view.
+            ctx3 = browser.new_context(viewport={"width": 1280, "height": 900})
+            ctx3.add_init_script("if (!sessionStorage.getItem('seeded')) { localStorage.setItem('lumen-api-key', 'sk_expired'); sessionStorage.setItem('seeded', '1'); }")
+            p3 = ctx3.new_page()
+            p3.goto("http://localhost:8000/?annual=USC00118740&year=2012")
+            p3.wait_for_selector("#banner button.primary", timeout=30000)
+            banner = p3.text_content("#banner")
+            print("expired-key banner:", banner)
+            check("expired" in banner and p3.text_content("#banner button.primary") == "Renew Lumen key", "expired key: banner with a Renew button")
+            check(p3.evaluate("() => localStorage.getItem('lumen-api-key')") is None, "expired key is forgotten")
+            check(p3.is_visible("#panel-annual"), "the page you were on stays open")
+            with p3.expect_request(lambda r: "/oauth/authorize" in r.url) as req3:
+                p3.click("#banner button.primary")
+            check(MOCK + "/oauth/authorize?" in req3.value.url, "Renew starts Lumen sign-in")
+            ctx3.close()
             browser.close()
     finally:
         for pr in procs:

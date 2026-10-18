@@ -1192,7 +1192,10 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       page.querySelector(".alm-ai").textContent += ` Text written by ${n.model} via Lumen.`;
     } catch (err) {
       deps.logEvent("almanac narrative", err.message);
-      page.querySelector(".alm-ai").textContent += " (The AI text could not be generated this time; the boxes show plain summaries.)";
+      deps.onLumenError?.(err);
+      page.querySelector(".alm-ai").textContent += err?.status === 401
+        ? " (Your Lumen key has expired, so the boxes show plain summaries. Renew it with the button at the top of the page.)"
+        : " (The AI text could not be generated this time; the boxes show plain summaries.)";
     } finally {
       for (const box of Object.values(boxes)) box.classList.remove("alm-pending");
       onStatus("");

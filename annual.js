@@ -481,6 +481,8 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
           aiNote.textContent = `The summaries are written by an AI model (${n.model} via Lumen) from the numbers on this page, so they may make mistakes; check important values against the charts and tables.`;
         } catch (err) {
           deps.logEvent("annual narrative", err.message);
+          deps.onLumenError?.(err);
+          if (err?.status === 401) aiNote.textContent = "Your Lumen key has expired, so the summaries are plain templated text. Renew it with the button at the top of the page.";
         } finally {
           if (mine === token) for (const box of Object.values(boxes)) box.classList.remove("alm-pending");
         }

@@ -234,7 +234,9 @@ color scale so they read on the gray basemap.
   hidden. The two CSP messages this leaves in the console are expected.
 - **The key** is kept in `localStorage`, as in Lumen's example. **Disconnect**
   forgets it in this browser; revoking it on the Lumen Profile page stops it
-  everywhere.
+  everywhere. When a key expires or is revoked, any Lumen call (the chat, or
+  the almanac and annual summaries) shows a **Renew Lumen key** button, and
+  signing in again returns to the same tab and station.
 
 ## Test
 

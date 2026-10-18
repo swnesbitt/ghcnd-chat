@@ -125,13 +125,44 @@ function copyLogButton() {
   return wrap;
 }
 
-function showBanner(text) {
+function showBanner(text, action = null) {
   const b = $("banner");
   b.replaceChildren();
   b.hidden = !text;
   if (!text) return;
   logEvent("banner", text);
-  b.append(el("span", { textContent: text }), copyLogButton());
+  b.append(el("span", { textContent: text }));
+  if (action) {
+    const btn = el("button", { type: "button", className: "primary", textContent: action.label });
+    btn.addEventListener("click", action.run);
+    b.append(btn);
+  } else {
+    b.append(copyLogButton());
+  }
+}
+
+// Sign in (or renew an expired key) and come back to the same view: Lumen
+// returns to the bare page, so the tab and station are restored from here.
+const RETURN_KEY = "ghcnd-chat:return-to";
+function signIn() {
+  try { sessionStorage.setItem(RETURN_KEY, location.search + location.hash); } catch { /* storage unavailable */ }
+  showBanner("");
+  lumen.login();
+}
+function restoreReturn() {
+  let back = null;
+  try {
+    back = sessionStorage.getItem(RETURN_KEY);
+    sessionStorage.removeItem(RETURN_KEY);
+  } catch { /* storage unavailable */ }
+  if (back && !location.search.includes("code=")) history.replaceState(null, "", location.pathname + back);
+}
+
+// Lumen keys can expire or be revoked; any 401 offers a one-click renewal.
+const keyExpired = (err) => err?.status === 401 || /expired|invalid api key|revoked/i.test(err?.message || "");
+function offerRenewal() {
+  showBanner("Your Lumen key has expired or was revoked. Renew it to keep using the chat and the AI-written summaries.",
+    { label: "Renew Lumen key", run: signIn });
 }
 
 // The page's CSP blocks any host not listed in connect-src. Say so plainly
@@ -754,8 +785,9 @@ async function embedChart(node, spec, onView = null) {
 
 function handleLumenError(err) {
   if (!(err instanceof LumenError)) return false;
-  if (err.status === 401) {
-    showBanner("Your Lumen key is no longer valid (it may have been revoked). Connect again.");
+  if (keyExpired(err)) {
+    lumen.logout();
+    offerRenewal();
     showConnect();
   } else if (err.status === 403 && err.code === "consent_required") {
     showBanner(`${$("model").value} needs your acknowledgment before use. Accept it on Lumen (${CONFIG.lumenBaseUrl}/models), then ask again.`);
@@ -817,10 +849,7 @@ async function ask(text) {
 // ---------------------------------------------------------------------------
 // Controls
 
-$("connect").addEventListener("click", () => {
-  showBanner("");
-  lumen.login();
-});
+$("connect").addEventListener("click", signIn);
 
 $("disconnect").addEventListener("click", () => {
   lumen.logout();
@@ -893,6 +922,13 @@ initAlmanac({
   embedChart,
   renderMarkdown: (t) => DOMPurify.sanitize(marked.parse(cleanModelText(t))),
   logEvent,
+  onLumenError: (err) => {
+    if (keyExpired(err)) {
+      lumen.logout();
+      offerRenewal();
+      showConnect();
+    }
+  },
 });
 
 let almanacRunning = false;
@@ -1040,6 +1076,13 @@ initAnnual({
   embedChart,
   renderMarkdown: (t) => DOMPurify.sanitize(marked.parse(cleanModelText(t))),
   logEvent,
+  onLumenError: (err) => {
+    if (keyExpired(err)) {
+      lumen.logout();
+      offerRenewal();
+      showConnect();
+    }
+  },
 });
 
 let annualRunning = false;
@@ -1133,6 +1176,7 @@ function almanacFromUrl() {
   } catch (err) {
     showBanner(err.message);
   }
+  restoreReturn();
   if (!annualFromUrl()) almanacFromUrl();
   if (lumen.getKey()) await showApp();
   else showConnect();
