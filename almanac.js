@@ -638,7 +638,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       hasT ? h("td", { text: `${F.t(r.tmin)} ${F.dep(r.dep_lo)}`.trim() }) : null,
       hasP ? h("td", { text: r.kind === "forecast" && isNum(r.pop) ? `${F.p(r.prcp)} (${Math.round(r.pop)}%)` : F.p(r.prcp) }) : null,
       hasSnow ? h("td", { text: F.s(r.snow) }) : null,
-      h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : provisional.has(r.date) ? "Provisional" : isNum(r.tmax) || isNum(r.prcp) ? "Observed" : "Not yet reported" })));
+      h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : !isNum(r.tmax) && !isNum(r.prcp) ? "Not yet reported" : provisional.has(r.date) ? "Provisional" : "Observed" })));
     section("outlook", "The past 5 days and the next 5",
       hasT ? chart(windowChart(chartRows, D, U), "Daily highs and lows with normals and records") : null,
       hasP && prRows.some((r) => r.value > 0) ? chart(precipBars(prRows, U, "Precipitation"), "Daily precipitation") : null,

@@ -227,6 +227,7 @@ function onActivity(a) {
     $("downloaded").textContent = `Downloaded ${mb} MB from NOAA in ${a.stats.files} files this session.`;
   }
   if (a.kind === "loaded") renderRecords(a.loaded);
+  if (a.kind === "acis-skipped") logEvent("ACIS values skipped as implausible", a.skipped.join("; "));
 }
 
 // ---------------------------------------------------------------------------

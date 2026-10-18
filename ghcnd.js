@@ -501,9 +501,28 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const body = await resp.json();
     if (body.error) return null; // station not in ACIS
+    // Provisional reports are unchecked, and some arrive as placeholders (a
+    // day keyed as 0 for both high and low before the observer reports), so
+    // temperatures are held to the station's own range for that month, with
+    // 10 °F to spare, and to high ≥ low.
+    const tCol = els.indexOf("TMAX") + 1;
+    const nCol = els.indexOf("TMIN") + 1;
+    const bounds = Object.fromEntries(toRows(await q(`
+      SELECT element, month(date) AS m, min(value) AS lo, max(value) AS hi FROM obs
+      WHERE station = ${sqlString(id)} AND element IN ('TMAX', 'TMIN') GROUP BY 1, 2`)).map((r) => [`${r.element}|${r.m}`, r]));
+    const plausible = (el, date, c) => {
+      const b = bounds[`${el}|${Number(date.slice(5, 7))}`];
+      return !b || (c >= b.lo - 5.6 && c <= b.hi + 5.6);
+    };
     const rows = [];
+    const skipped = [];
     for (const rec of body.data || []) {
       const date = rec[0];
+      const hiRaw = tCol ? String(rec[tCol] ?? "M").trim() : "M";
+      const loRaw = nCol ? String(rec[nCol] ?? "M").trim() : "M";
+      const hiF = parseFloat(hiRaw);
+      const loF = parseFloat(loRaw);
+      const badPair = Number.isFinite(hiF) && Number.isFinite(loF) && (hiF < loF || (hiF === 0 && loF === 0));
       els.forEach((el, i) => {
         if (!last[el] || date <= last[el]) return;
         const raw = String(rec[i + 1] ?? "M").trim();
@@ -514,9 +533,14 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         // To GHCN-Daily units: degC, mm; snow and depth in whole mm.
         const value = el === "TMAX" || el === "TMIN" ? Math.round(((v - 32) * 5) / 9 * 10) / 10
           : el === "PRCP" ? Math.round(v * 25.4 * 10) / 10 : Math.round(v * 25.4);
+        if ((el === "TMAX" || el === "TMIN") && (badPair || !plausible(el, date, value))) {
+          skipped.push(`${date} ${el} ${raw}`);
+          return;
+        }
         rows.push({ el, date, value, trace });
       });
     }
+    if (skipped.length) onActivity?.({ kind: "acis-skipped", skipped });
     if (!rows.length) return { added: 0 };
     await q(`INSERT INTO obs VALUES ${rows.map((r) =>
       `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}', ${r.value}, ${r.trace ? "'T'" : "NULL"}, NULL)`).join(", ")}`);
