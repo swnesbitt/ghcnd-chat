@@ -430,10 +430,11 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   const subs = new Map(subRows.map((r) => [`${r.element}|${r.d}`, r]));
   const star = (date, el) => (subs.has(`${el}|${date}`) ? "*" : "");
   const subDay = (date) => subs.get(`TMAX|${date}`) || subs.get(`PRCP|${date}`) || subs.get(`TMIN|${date}`);
-  const subNote = () => {
-    if (!subRows.length) return null;
+  const subNote = (dates) => {
+    const rows = subRows.filter((r) => dates.includes(r.d));
+    if (!rows.length) return null;
     const groups = new Map();
-    for (const r of subRows) {
+    for (const r of rows) {
       const k = `${r.source}|${r.d}`;
       if (!groups.has(k)) groups.set(k, { ...r, els: new Set() });
       groups.get(k).els.add({ TMAX: "high", TMIN: "low", PRCP: "precipitation", SNOW: "snowfall" }[r.element]);
@@ -635,7 +636,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     fc || historical ? null : h("p", { className: "fine", text: forecast.status === "rejected" && !/covers the US/.test(forecast.reason?.message || "")
       ? "The National Weather Service forecast could not be reached just now. Reload the page to try again."
       : "No National Weather Service forecast is available for this station." }),
-    L && subDay(Ldate) ? subNote() : null);
+    L && subDay(Ldate) ? subNote([Ldate]) : null);
   const pick = (r) => r && {
     date: r.date, high: round(r.tmax), low: round(r.tmin), precip: round(r.prcp, U.pd), snow: round(r.snow, 1), pop: round(r.pop),
     normal_high: round(r.n_hi), normal_low: round(r.n_lo), high_vs_normal: round(r.dep_hi), low_vs_normal: round(r.dep_lo),
@@ -675,7 +676,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
           hasT ? h("th", { scope: "col", text: "High (vs normal)" }) : null, hasT ? h("th", { scope: "col", text: "Low (vs normal)" }) : null,
           hasP ? h("th", { scope: "col", text: "Precip" }) : null, hasSnow ? h("th", { scope: "col", text: "Snow" }) : null, h("td"))),
         h("tbody", {}, tr))),
-      win.some((r) => r.kind !== "forecast" && subDay(r.date)) ? subNote() : null);
+      subNote(win.filter((r) => r.kind !== "forecast").map((r) => r.date)));
     facts.outlook = {
       days: win.map(pick).map((x, i) => ({ ...x, kind: win[i].kind === "observed" && subDay(win[i].date) ? `from nearby station ${subDay(win[i].date).source_name} (this station had not reported)`
         : win[i].kind === "observed" && provisional.has(win[i].date) ? "observed (provisional)" : win[i].kind })),
@@ -929,7 +930,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
           h("td", { className: "alm-wrap", text: x.comparison }),
           h("td", { text: x.earliest_on_record ? fmtDay(x.earliest_on_record, { month: "short", day: "numeric", year: "numeric" }) : "–" }),
           h("td", { text: x.latest_on_record ? fmtDay(x.latest_on_record, { month: "short", day: "numeric", year: "numeric" }) : "–" })))))),
-      ffacts.some((x) => x.this_season && subs.has(`TMIN|${x.this_season}`)) ? subNote() : null,
+      subNote(ffacts.map((x) => x.this_season).filter((d) => d && subs.has(`TMIN|${d}`))),
       fcNights.length ? h("h3", { text: "Forecast lows" }) : null,
       fcNights.length ? h("div", { className: "alm-scroll" }, h("table", { className: "alm-table" },
         h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Morning of" }), h("th", { scope: "col", text: "Forecast low" }), h("th", { scope: "col", text: "Reaches" }))),

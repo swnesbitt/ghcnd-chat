@@ -90,6 +90,10 @@ def main() -> int:
             for t in tables:
                 print("table:\n  " + t.replace("\n", "\n  "))
             check("through Oct" in tables[0] and "Mean high" in tables[0] and " of " in tables[0], "temperature table: year so far, ranks")
+            for _ in range(60):  # the summaries are requested a moment after the charts draw
+                if page.evaluate("() => [...document.querySelectorAll('.ann .alm-box')].every(b => b.textContent.includes('MOCK-NARRATIVE'))"):
+                    break
+                page.wait_for_timeout(500)
             boxes = page.eval_on_selector_all(".ann .alm-box", "b => b.map(x => x.textContent.trim())")
             check(len(boxes) == 3 and all("MOCK-NARRATIVE" in b for b in boxes), "a model summary under each chart")
 

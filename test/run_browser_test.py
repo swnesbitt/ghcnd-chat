@@ -166,7 +166,10 @@ def main() -> int:
             failed_step = page.locator(".step.failed").first
             failed_step.locator("summary").click()
             failed_step.locator(".copy-log button").click()
-            page.wait_for_function("[...document.querySelectorAll('.copy-log button')].some(b => b.textContent === 'Log copied')")
+            for _ in range(40):  # wait_for_function's string predicates need eval, which the CSP blocks
+                if page.evaluate("() => [...document.querySelectorAll('.copy-log button')].some(b => b.textContent === 'Log copied')"):
+                    break
+                page.wait_for_timeout(250)
             copied = page.evaluate("navigator.clipboard.readText()")
             print("copied log head:", copied[:300].replace("\n", " / "))
             check("GHCN-Daily Chat log" in copied and "What were the ten wettest years" in copied
