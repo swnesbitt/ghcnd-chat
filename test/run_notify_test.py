@@ -1,4 +1,7 @@
-"""Browser test for the Daily email tab, with GitHub's API faked in the browser
+"""SHELVED with the Daily email tab (not wired into the site): re-wire notify.js
+before running this.
+
+Browser test for the Daily email tab, with GitHub's API faked in the browser
 (secrets are really encrypted, and decrypted here with the fake repository key).
 
     python test/run_notify_test.py [--chrome /path/to/chrome] [--out DIR]

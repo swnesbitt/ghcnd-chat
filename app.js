@@ -5,7 +5,6 @@ import { CONFIG } from "./config.js";
 import { runTurn } from "./agent.js";
 import { cleanModelText } from "./format.js";
 import { initAlmanac, renderAlmanac, findNearby } from "./almanac.js";
-import { initNotify, showNotify, addStationFromAlmanac, isEmailLumenRedirect, handleEmailLumenRedirect } from "./notify.js";
 import { marked } from "https://cdn.jsdelivr.net/npm/marked@18.1.1/+esm";
 import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.4.17/+esm";
 
@@ -847,7 +846,7 @@ for (const b of document.querySelectorAll(".examples button")) {
 // ---------------------------------------------------------------------------
 // Tabs: GHCN chat and Climate at a glance
 
-const TABS = ["chat", "almanac", "email"];
+const TABS = ["chat", "almanac"];
 
 function selectTab(name, { focus = false } = {}) {
   for (const t of TABS) {
@@ -859,12 +858,6 @@ function selectTab(name, { focus = false } = {}) {
     if (on && focus) tab.focus();
   }
   if (name === "chat" && location.search) history.replaceState(null, "", location.pathname + location.hash);
-  if (name === "email") {
-    if (location.hash !== "#email") history.replaceState(null, "", `${location.pathname}#email`);
-    showNotify();
-  } else if (location.hash === "#email") {
-    history.replaceState(null, "", location.pathname + location.search);
-  }
 }
 
 for (const t of TABS) {
@@ -900,12 +893,6 @@ async function showAlmanac(query, asOf = null) {
     window.almanacResult = { station: { id: station.id, name: station.name, state: station.state }, headline: r.headline, asOf: r.asOf };
     history.replaceState(null, "", `${location.pathname}?station=${station.id}${r.asOf ? `&date=${r.asOf}` : ""}`);
     document.title = `${station.name} almanac | GHCN-Daily Chat`;
-    const daily = el("button", { type: "button", className: "quiet", textContent: "Email this almanac daily" });
-    daily.addEventListener("click", () => {
-      addStationFromAlmanac({ id: station.id, name: station.name, state: station.state });
-      selectTab("email");
-    });
-    out.querySelector(".alm-head")?.append(el("p", { className: "alm-actions" }, daily));
   } catch (err) {
     setAlmStatus("");
     logEvent("almanac failed", err?.stack || err?.message || String(err));
@@ -994,21 +981,6 @@ $("alm-form").addEventListener("submit", (e) => {
   startAlmanac($("alm-input").value);
 });
 
-// The Daily email tab looks stations up by ID (station index) or place (nearest
-// long, current record), like the almanac does.
-async function lookupStation(q) {
-  if (STATION_ID.test(q)) {
-    const g = await startData();
-    const r = await g.sql(`SELECT id, name, state FROM stations WHERE id = '${q.toUpperCase()}'`);
-    if (!r.length) throw new Error(`No GHCN-Daily station ${q.toUpperCase()}`);
-    return r[0];
-  }
-  const near = await findNearby(q);
-  const st = near.stations.find((s) => s.id === near.recommended) || near.stations[0];
-  return { id: st.id, name: st.name, state: st.state };
-}
-initNotify({ root: $("ntf"), lookupStation });
-
 // ?station=USC00118740, ?id=..., or ?place=Champaign, IL open the almanac directly.
 function almanacFromUrl() {
   const p = new URLSearchParams(location.search);
@@ -1026,17 +998,12 @@ function almanacFromUrl() {
 // Start-up
 
 (async () => {
-  const emailKey = isEmailLumenRedirect();
   try {
-    // A Lumen redirect is for the chat's key, or for the daily email's key
-    // when the Daily email tab started it.
-    if (emailKey) await handleEmailLumenRedirect();
-    else await lumen.handleRedirect();
+    await lumen.handleRedirect();
   } catch (err) {
     showBanner(err.message);
   }
-  if (emailKey || location.hash === "#email") selectTab("email");
-  else almanacFromUrl();
+  almanacFromUrl();
   if (lumen.getKey()) await showApp();
   else showConnect();
 })();

@@ -1,3 +1,8 @@
+# SHELVED (October 2026): the schedule is off and the site no longer has the
+# Daily email tab (notify.js is kept but not loaded). To bring it back, restore
+# the schedule below, enable the workflow on the Actions tab, and re-wire
+# notify.js in app.js and index.html (see commit 7ef0850).
+#
 # Emails the Climate at a glance almanac to subscribers each morning.
 #
 # Runs every 15 minutes and sends each subscription once a day, at the first
@@ -22,8 +27,8 @@
 name: Daily almanac email
 
 on:
-  schedule:
-    - cron: "11,26,41,56 * * * *"
+  # schedule:
+  #   - cron: "11,26,41,56 * * * *"
   workflow_dispatch:
     inputs:
       subscription:

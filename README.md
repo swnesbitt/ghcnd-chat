@@ -35,8 +35,7 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 | `scripts/build_station_index.py` | Builds `station_index.parquet` (about 4 MB: NOAA's station and inventory files plus each US station's county) and `places.parquet` (about 4 MB: GeoNames places of 1,000+ people, loaded only when a question names a place) |
 | `.github/workflows/pages.yml` | Rebuilds the index daily and deploys to GitHub Pages |
 | `almanac.js` | The Climate at a glance tab |
-| `notify.js` | The Daily email tab (subscriptions, mail server, Lumen key, stored as repository secrets) |
-| `scripts/send_almanac.py`, `.github/workflows/notify.yml` | The daily email: renders the live almanac in headless Chrome and sends it |
+| `notify.js`, `scripts/send_almanac.py`, `.github/workflows/notify.yml` | The daily almanac email, shelved (see below) |
 | `test/` | Headless-Chrome end-to-end tests (`run_browser_test.py` for chat, `run_almanac_test.py` for the almanac) with a scripted mock Lumen |
 
 ## Configure
@@ -158,62 +157,15 @@ Everything numeric is computed in the page; the model writes only the text in
 the boxes, from a summary of those numbers. Signed out, the boxes get plain
 templated text.
 
-## Daily email
+## Daily email (shelved)
 
-The third tab, **Daily email**, sets up a scheduled email of the almanac for
-one or more stations. By default (until settings are first saved) it sends
-Champaign 3S (`USC00118740`) at 9:00 a.m. Central every day, by email to
-snesbitt@illinois.edu once a mail server is set up and, until then, as a GitHub
-notification to @swnesbitt.
-
-Each subscription is delivered one of two ways:
-
-- **Email**, through an SMTP server saved on the tab: HTML with the charts
-  inline, the PDF attached, any addresses.
-- **GitHub notification**, with no setup: the job posts the almanac as a comment
-  on the station's "Daily almanac" issue in this repository and @mentions the
-  subscriber's GitHub accounts, and GitHub emails it to them from
-  notifications@github.com (to each account's notification address, if email
-  for mentions is on). Charts and the PDF are uploaded to the `notify-images`
-  release and deleted after 30 days. Only GitHub accounts can receive it, and
-  the issue is public, like the rest of the repository.
-
-The default delivery is email when a mail server is set up and the subscription
-has addresses, otherwise GitHub.
-
-How it works:
-
-- `.github/workflows/notify.yml` runs every 15 minutes. `scripts/send_almanac.py`
-  checks which subscriptions are due (their local time has passed today and
-  they have not been sent today; up to three attempts a day), opens the live
-  page in headless Chrome at `?station=…` in the subscription's time zone, and
-  delivers the result: each section's text and tables, the charts, and the
-  whole page as a PDF. It records what it sent (subscription
-  ids and dates only) on the `notify-state` branch.
-- The tab stores everything as repository secrets, encrypted in the browser
-  with the repository's public key: `NOTIFY_CONFIG` (subscriptions), `SMTP_HOST`,
-  `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_FROM`, and
-  `LUMEN_API_KEY` (created through Lumen's consent page as its own key,
-  `ghcnd-chat-daily-email`, for the AI text). A readable copy of the
-  subscriptions is kept in the `NOTIFY_CONFIG` repository variable so the tab
-  can show them; variables are visible only to people with access to the
-  repository. Addresses never appear in the repository or in the public Actions
-  logs.
-- Changing settings needs a fine-grained GitHub token for this repository with
-  **Actions**, **Secrets** and **Variables** set to Read and write. The tab links
-  to GitHub's token page with those filled in. The token stays in the browser
-  (for the tab's session, or on the device if you tick Remember).
-- **Send now** on a subscription runs the workflow for it immediately.
-
-Mail: any SMTP server works. The simplest is a Gmail account with an app
-password (`smtp.gmail.com`, port 587). University Microsoft 365 accounts usually
-cannot send over SMTP from outside campus.
-
-GitHub's scheduler runs a few minutes late at times, so emails arrive within
-about 15 minutes of the time set. GitHub disables scheduled workflows in a
-repository with no activity for 60 days; the daily commit to `notify-state`
-should count as activity, but if emails stop, re-enable the workflow on the
-Actions tab.
+A scheduled email of the almanac was built and then shelved in October 2026.
+The code is still here but not used: `scripts/send_almanac.py` (renders the
+live almanac in headless Chrome and sends it by SMTP or as a GitHub issue
+comment that @mentions the subscriber), `.github/workflows/notify.yml` (its
+schedule is commented out and the workflow is disabled), `notify.js` (the
+settings tab, no longer loaded by the page) and `test/run_notify_test.py`.
+Commit 7ef0850 is the last version with everything wired up.
 
 ## Areas
 
@@ -245,12 +197,7 @@ color scale so they read on the gray basemap.
 - **Content-Security-Policy.** `connect-src` allows only this site, Lumen, the
   NOAA bucket, the CDN and DuckDB's extension server. DuckDB's worker inherits
   the policy, so a model-written query cannot send data anywhere else (the test
-  checks this). It also allows the NWS, NCEI and ACIS data services and
-  `api.github.com` (the Daily email tab); the GitHub API accepts writes only with
-  a token, and model output cannot run script in the page to read one.
-- **The GitHub token** for the Daily email tab is kept in `sessionStorage`
-  (`localStorage` if you tick Remember) and sent only to `api.github.com`. Give it
-  access to this one repository and an expiry date.
+  checks this). It also allows the NWS, NCEI and ACIS data services.
 - **SQL guard.** `run_sql` and `make_chart` accept one read-only statement and
   reject file and network functions, DDL and DML, with an error the model can act on.
 - **Rendering.** Model output is rendered as Markdown through DOMPurify; tool
@@ -271,8 +218,6 @@ color scale so they read on the gray basemap.
 pip install playwright duckdb && python -m playwright install chromium
 python test/run_browser_test.py            # or --chrome /path/to/chrome
 python test/run_almanac_test.py            # Climate at a glance
-pip install pynacl && python test/run_notify_test.py   # Daily email tab (GitHub API faked)
-python scripts/send_almanac.py --send --only champaign-3s --dry-run out/   # an email, written to files
 ```
 
 The test serves a copy of the site pointed at `test/mock_lumen.py`, a scripted

@@ -24,7 +24,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-SITE_FILES = ["index.html", "styles.css", "app.js", "agent.js", "ghcnd.js", "format.js", "almanac.js", "notify.js", "config.js",
+SITE_FILES = ["index.html", "styles.css", "app.js", "agent.js", "ghcnd.js", "format.js", "almanac.js", "config.js",
               "lumen-oauth.js", "station_index.parquet", "places.parquet"]
 MOCK = "http://localhost:5001"
 
