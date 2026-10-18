@@ -160,6 +160,13 @@ def main() -> int:
             p2.click(".alm-choices > button")
             n_more = p2.locator(".alm-stations li").count()
             check(n_more == 11, "More stations shows 7 more")
+            retired_on = p2.eval_on_selector_all(".alm-stations li", "l => l.filter(x => x.innerText.includes('no longer reporting')).length")
+            check(p2.is_checked(".alm-hide input") and retired_on == 0, "stations no longer reporting are hidden by default")
+            p2.uncheck(".alm-hide input")
+            retired_off = p2.eval_on_selector_all(".alm-stations li", "l => l.filter(x => x.innerText.includes('no longer reporting')).length")
+            print("no-longer-reporting stations shown with the toggle off:", retired_off, "| label:", p2.text_content(".alm-hide"))
+            check(retired_off > 0, "turning the toggle off shows them")
+            p2.check(".alm-hide input")
             first_name = p2.text_content(".alm-head h1")
             other = p2.locator(".alm-station:not([aria-current='true'])").first
             other_name = other.locator(".alm-st-name").text_content()

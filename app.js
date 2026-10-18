@@ -932,15 +932,32 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
   const span = (c, name) => (c ? `${name} ${c.first}–${c.last}` : null);
   // The recommended station first, then the rest by distance.
   const rec = near.stations.find((st) => st.id === near.recommended);
-  const ordered = [rec, ...near.stations.filter((st) => st.id !== near.recommended)].filter(Boolean);
+  const all = [rec, ...near.stations.filter((st) => st.id !== near.recommended)].filter(Boolean);
   const thisYear = new Date().getFullYear();
-  let shown = Math.min(4, ordered.length);
+  const lastYear = (st) => Math.max(0, ...Object.values(st.cov).map((c) => c.last || 0));
+  const retired = (st) => lastYear(st) < thisYear - 1;
+  // "Hide stations no longer reporting", remembered in this browser (on by default).
+  const hideBox = el("input", { type: "checkbox", checked: store.get("hide-retired-stations") !== "0" });
+  let ordered = [];
+  let shown = 4;
   const list = el("ol", { className: "alm-stations" });
   const more = el("button", { type: "button", className: "quiet", textContent: "More stations" });
+  const count = el("span", { className: "fine" });
+  const filter = () => {
+    ordered = hideBox.checked ? all.filter((st) => !retired(st) || st.id === selected || st.id === near.recommended) : all;
+    const hidden = all.length - ordered.length;
+    count.textContent = hidden ? ` (${hidden} hidden)` : "";
+  };
+  hideBox.addEventListener("change", () => {
+    store.set("hide-retired-stations", hideBox.checked ? "1" : "0");
+    filter();
+    draw();
+  });
   const draw = () => {
+    shown = Math.min(Math.max(shown, 4), ordered.length);
     list.replaceChildren(...ordered.slice(0, shown).map((st) => {
       const isSel = st.id === selected;
-      const last = Math.max(...Object.values(st.cov).map((c) => c.last || 0));
+      const last = lastYear(st);
       const cov = ([span(st.cov.TMAX, "Temperature"), span(st.cov.PRCP, "Precipitation"), span(st.cov.SNOW, "Snow")].filter(Boolean).join(", ") || "No temperature or precipitation record")
         + (last && last < thisYear - 1 ? " (no longer reporting)" : "");
       const btn = el("button", { type: "button", className: "alm-station" },
@@ -952,6 +969,7 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
       btn.addEventListener("click", () => {
         if (busy() || st.id === selected) return;
         selected = st.id;
+        filter();
         draw();
         pick(st.id);
       });
@@ -964,10 +982,12 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
     draw();
     list.children[Math.min(shown - 7, list.children.length - 1)]?.querySelector("button")?.focus();
   });
+  filter();
   draw();
   const placeName = near.place ? `${near.place.name}, ${near.place.country === "US" ? near.place.admin1 : near.place.country}` : "here";
   box.replaceChildren(el("h2", { id: `${box.id}-h`, textContent: `Stations near ${placeName}` }),
-    el("p", { className: "fine", textContent: near.named ? `${what} shows the station you named. Pick another to switch.` : `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }), list, more);
+    el("p", { className: "fine", textContent: near.named ? `${what} shows the station you named. Pick another to switch.` : `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }),
+    el("label", { className: "alm-hide" }, hideBox, " Hide stations no longer reporting", count), list, more);
   box.hidden = false;
 }
 
