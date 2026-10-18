@@ -284,7 +284,17 @@ const utcX = (title, format = "%b %-d") => ({
   axis: { format, labelAngle: 0, tickCount: 6 },
 });
 
-function windowChart(rows, today, U) {
+// Charts stacked over the same days line up: the same x domain (padded half a
+// day each side so points and bars sit inside the plot) and a fixed y-axis width.
+const Y_AXIS = { minExtent: 44, maxExtent: 44 };
+const halfDay = (d, sign) => new Date(Date.parse(`${d}T00:00:00Z`) + sign * 432e5).toISOString();
+// Ticks pinned to each day's UTC midnight, where the points and bars are.
+const dayDomain = (dates) => {
+  const s = [...dates].sort();
+  return { domain: [halfDay(s[0], -1), halfDay(s[s.length - 1], 1)], values: s.map((d) => ({ year: +d.slice(0, 4), month: +d.slice(5, 7), date: +d.slice(8, 10), utc: true })) };
+};
+
+function windowChart(rows, today, U, xDomain) {
   const domain = ["High", "Low", "Normal high", "Normal low", "Record high", "Record low"];
   const color = {
     field: "series", type: "nominal", title: null,
@@ -292,8 +302,8 @@ function windowChart(rows, today, U) {
     legend: { orient: "bottom", columns: 3, symbolType: "stroke", symbolStrokeWidth: 2 },
   };
   const strokeDash = { field: "series", type: "nominal", scale: { domain, range: [[1, 0], [1, 0], [6, 4], [6, 4], [2, 3], [2, 3]] }, legend: null };
-  const x = { field: "date", type: "temporal", scale: { type: "utc" }, title: null, axis: { format: "%a %-d", labelAngle: 0 } };
-  const y = { field: "value", type: "quantitative", title: U.t, scale: { zero: false } };
+  const x = { field: "date", type: "temporal", scale: { type: "utc", domain: xDomain.domain }, title: null, axis: { format: "%a %-d", labelAngle: 0, values: xDomain.values } };
+  const y = { field: "value", type: "quantitative", title: U.t, scale: { zero: false }, axis: Y_AXIS };
   const tooltip = [{ field: "date", type: "temporal", format: "%a %b %-d" }, { field: "series" }, { field: "value", format: ".0f" }];
   const layer = (filter, mark, extra = {}) => ({ transform: [{ filter }], mark, encoding: { x, y, color, strokeDash, detail: { field: "series" }, tooltip, ...extra } });
   return {
@@ -315,14 +325,18 @@ function windowChart(rows, today, U) {
   };
 }
 
-function precipBars(rows, U, title) {
+function precipBars(rows, U, title, domain) {
+  // Bars span 0.6 day centered on each date, on the same continuous axis as the temperature chart.
+  const values = rows.map((r) => ({ ...r, d0: new Date(Date.parse(`${r.date}T00:00:00Z`) - 0.3 * 864e5).toISOString(), d1: new Date(Date.parse(`${r.date}T00:00:00Z`) + 0.3 * 864e5).toISOString() }));
   return {
     width: "container", height: 90,
-    data: { values: rows },
-    mark: { type: "bar", width: { band: 0.6 } },
+    data: { values },
+    mark: { type: "rect" },
     encoding: {
-      x: { field: "date", type: "temporal", timeUnit: "utcyearmonthdate", scale: { type: "utc" }, title: null, axis: { format: "%a %-d", labelAngle: 0 } },
-      y: { field: "value", type: "quantitative", title: `${title} (${U.p})`, axis: { format: U.us ? ".2f" : ".1f", tickCount: 3 } },
+      x: { field: "d0", type: "temporal", scale: { type: "utc", domain: domain.domain }, title: null, axis: { format: "%a %-d", labelAngle: 0, values: domain.values } },
+      x2: { field: "d1" },
+      y: { field: "value", type: "quantitative", title: `${title} (${U.p})`, axis: { format: U.us ? ".2f" : ".1f", tickCount: 3, ...Y_AXIS } },
+      y2: { datum: 0 },
       color: { field: "kind", type: "nominal", title: null, scale: { domain: ["Observed", "Forecast"], range: [COLORS.precip, COLORS.precipLight] }, legend: { orient: "bottom" } },
       tooltip: [{ field: "date", type: "temporal", timeUnit: "utcyearmonthdate", format: "%b %-d" }, { field: "value", format: `.${U.pd}f` }, { field: "kind" }],
     },
@@ -714,8 +728,8 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       hasSnow ? h("td", { text: `${F.s(r.snow)}${star(r.date, "SNOW")}` }) : null,
       h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : !isNum(r.tmax) && !isNum(r.prcp) ? "Not yet reported" : subDay(r.date) ? "Nearby station*" : provisional.has(r.date) ? "Provisional" : "Observed" })));
     section("outlook", "The past 5 days and the next 5",
-      hasT ? chart(windowChart(chartRows, D, U), "Daily highs and lows with normals and records") : null,
-      hasP && prRows.some((r) => r.value > 0) ? chart(precipBars(prRows, U, "Precipitation"), "Daily precipitation") : null,
+      hasT ? chart(windowChart(chartRows, D, U, dayDomain(win.map((r) => r.date))), "Daily highs and lows with normals and records") : null,
+      hasP && prRows.some((r) => r.value > 0) ? chart(precipBars(prRows, U, "Precipitation", dayDomain(win.map((r) => r.date))), "Daily precipitation") : null,
       h("div", { className: "alm-scroll" }, h("table", { className: "alm-table" },
         h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Day" }),
           hasT ? h("th", { scope: "col", text: "High (vs normal)" }) : null, hasT ? h("th", { scope: "col", text: "Low (vs normal)" }) : null,

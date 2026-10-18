@@ -102,6 +102,9 @@ export function koppen(T, P, lat) {
 // ---------------------------------------------------------------------------
 // Charts (Vega-Lite)
 
+// Stacked charts line up: same x domain and a fixed y-axis width.
+const Y_AXIS = { minExtent: 44, maxExtent: 44 };
+
 const hoverLayer = (tooltip) => ({
   params: [{ name: "hover", select: { type: "point", encodings: ["x"], nearest: true, on: "pointerover", clear: "pointerout" } }],
   mark: { type: "rule", color: "#4a4a4a", strokeWidth: 1 },
@@ -114,7 +117,7 @@ const dayX = (domain, format = "%b") => ({
 });
 
 function tempSpec(rows, year, U) {
-  const y = (field) => ({ field, type: "quantitative", title: U.t, scale: { zero: false } });
+  const y = (field) => ({ field, type: "quantitative", title: U.t, scale: { zero: false }, axis: Y_AXIS });
   return {
     width: "container", height: 320,
     data: { values: rows },
@@ -141,7 +144,7 @@ function tempSpec(rows, year, U) {
 }
 
 function cumulativeSpec(rows, domain, U, unit, label, color, band) {
-  const y = (field) => ({ field, type: "quantitative", title: `${label} (${unit})` });
+  const y = (field) => ({ field, type: "quantitative", title: `${label} (${unit})`, axis: Y_AXIS });
   return {
     width: "container", height: 280,
     data: { values: rows },
@@ -162,11 +165,14 @@ function cumulativeSpec(rows, domain, U, unit, label, color, band) {
 function dailyBarsSpec(rows, domain, U, unit, label, color) {
   return {
     width: "container", height: 110,
-    data: { values: rows.filter((r) => isNum(r.day) && r.day > 0) },
-    mark: { type: "bar", color, width: { band: 1 } },
+    data: { values: rows.filter((r) => isNum(r.day) && r.day > 0).map((r) => ({ ...r,
+      d0: new Date(Date.parse(`${r.date}T00:00:00Z`) - 0.45 * 864e5).toISOString(), d1: new Date(Date.parse(`${r.date}T00:00:00Z`) + 0.45 * 864e5).toISOString() })) },
+    mark: { type: "rect", color, clip: true },
     encoding: {
-      x: { ...dayX(domain), timeUnit: "utcyearmonthdate" },
-      y: { field: "day", type: "quantitative", title: `${label} (${unit})`, axis: { tickCount: 3 } },
+      x: { ...dayX(domain), field: "d0" },
+      x2: { field: "d1" },
+      y: { field: "day", type: "quantitative", title: `${label} (${unit})`, axis: { tickCount: 3, ...Y_AXIS } },
+      y2: { datum: 0 },
       tooltip: [{ field: "t_date", title: "Date" }, { field: "t_day", title: label }, { field: "t_rec", title: "Record for the date" }],
     },
   };
