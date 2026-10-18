@@ -87,9 +87,11 @@ def main() -> int:
             win_rows = page.eval_on_selector_all("#alm-outlook ~ .alm-scroll tbody tr", "r => r.map(x => x.innerText.replace(/\\t/g, ' | '))")
             print("window rows:\n  " + "\n  ".join(win_rows))
             check(any("Oct 16" in r and "Provisional" in r and "72°F" in r for r in win_rows), "Oct 16 filled from ACIS (72°F) and marked provisional")
-            check("(provisional)" in now and "Oct 16" in now, "latest report is the provisional Oct 16")
+            check(("(provisional)" in now and "Oct 16" in now) or "(from a nearby station*)" in now, "latest report is provisional (or from a nearby station when this one has not reported)")
             check("AI model" in page.text_content(".alm-ai") and "may make mistakes" in page.text_content(".alm-ai"), "AI note at the bottom")
             check(page.url.endswith("?station=USC00118740"), "URL holds the station for sharing")
+            notes = page.eval_on_selector_all(".alm-subnote", "n => n.map(x => x.textContent)")
+            print("nearby-station notes:", notes[:1])
             frost = page.text_content("#alm-frost + .alm-box ~ .alm-scroll") if page.locator("#alm-frost").count() else ""
             print("frost table:", " | ".join(frost.split())[:300])
             dd = page.locator("#alm-degree_days").locator("xpath=..").text_content()

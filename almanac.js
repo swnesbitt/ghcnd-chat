@@ -368,6 +368,7 @@ const NARRATOR = `You write the short text boxes of a station climate almanac fo
 - "frost": 3-4 sentences on frost and freeze this season against the normal dates: what has happened so far, whether the forecast brings a frost or freeze (or could, where a forecast low is within the margin given), and how usual or unusual that timing is relative to 1991-2020 (use the percentages given); or "" if the input has no frost section.
 - "season": 3-4 sentences on how hot this summer or how cold this winter has been so far: its rank among all years on record, hot or cold extremes and day counts against the 1991-2020 average, and precipitation or snow; or "" if the input has no season section.
 - "degree_days": 2-3 sentences on year-to-date growing, heating and cooling degree days against normal and what that means for crops and energy use.
+A day marked as from a nearby station is that station's report, used because this one had not reported; if you cite it, say briefly that it comes from the nearby station.
 Many stations are cooperative observers who read the thermometer once a day, often in the morning (observation_time, e.g., "0800"), so a reported high often comes from the previous afternoon. That is normal practice; do not mention it.
 Plain sentences, Unicode symbols (°, −, ≤), the units given, no LaTeX, no headings, no lists.`;
 
@@ -415,7 +416,32 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   ]);
   if (series.status === "rejected") throw series.reason;
   const loadedEls = new Set(series.value.results.filter((r) => r.loaded).map((r) => r.element));
+  // Days the station has not reported in the last 10, filled from the nearest
+  // station that has them (marked * on the page).
+  if (!historical) {
+    try {
+      await g.fillNeighbors({ station: st.id, elements: ["TMAX", "TMIN", "PRCP", "SNOW"], start_date: addDays(D, -10), end_date: addDays(D, -1) });
+    } catch (err) {
+      deps.logEvent("almanac nearby fill", err.message);
+    }
+  }
   const provisional = new Set((await g.sql(`SELECT DISTINCT strftime(date, '%Y-%m-%d') AS d FROM provisional WHERE station = ${sq(st.id)}`)).map((r) => r.d));
+  const subRows = await g.sql(`SELECT element, strftime(date, '%Y-%m-%d') AS d, source, source_name, distance_km FROM substituted WHERE station = ${sq(st.id)} ORDER BY date`);
+  const subs = new Map(subRows.map((r) => [`${r.element}|${r.d}`, r]));
+  const star = (date, el) => (subs.has(`${el}|${date}`) ? "*" : "");
+  const subDay = (date) => subs.get(`TMAX|${date}`) || subs.get(`PRCP|${date}`) || subs.get(`TMIN|${date}`);
+  const subNote = () => {
+    if (!subRows.length) return null;
+    const groups = new Map();
+    for (const r of subRows) {
+      const k = `${r.source}|${r.d}`;
+      if (!groups.has(k)) groups.set(k, { ...r, els: new Set() });
+      groups.get(k).els.add({ TMAX: "high", TMIN: "low", PRCP: "precipitation", SNOW: "snowfall" }[r.element]);
+    }
+    const dist = (km) => (U.us ? `${Math.round(km * 0.6214)} mi` : `${Math.round(km)} km`);
+    return h("p", { className: "fine alm-subnote", text: `* ${st.name} had not reported ${[...groups.values()].map((x) =>
+      `${fmtDay(x.d, { weekday: "short", month: "short", day: "numeric" })} (${[...x.els].join(", ")}): shown from ${x.source_name} (${x.source}), ${dist(x.distance_km)} away`).join("; ")}. Provisional, via ACIS.` });
+  };
   const hasT = loadedEls.has("TMAX") && loadedEls.has("TMIN");
   const hasP = loadedEls.has("PRCP");
   const fc = forecast.status === "fulfilled" ? forecast.value : null;
@@ -602,13 +628,14 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   section("now", "Yesterday and today",
     h("div", { className: "alm-scroll" }, h("table", { className: "alm-table alm-now" },
       h("thead", {}, h("tr", {}, h("td"),
-        h("th", { scope: "col", text: L ? `${latestLabel}, ${fmtDay(Ldate)}${provisional.has(Ldate) ? " (provisional)" : ""}` : "Latest report" }),
+        h("th", { scope: "col", text: L ? `${latestLabel}, ${fmtDay(Ldate)}${subDay(Ldate) ? " (from a nearby station*)" : provisional.has(Ldate) ? " (provisional)" : ""}` : "Latest report" }),
         h("th", { scope: "col", text: historical ? `${fmtDay(D)} (observed)` : `Today, ${fmtDay(D)}${fc ? " (forecast)" : ""}` }))),
       h("tbody", {}, nowRows))),
     provisional.size ? h("p", { className: "fine", text: `Days after ${fmtDay(addDays([...provisional].sort()[0], -1), { month: "short", day: "numeric" })} are provisional reports from the Regional Climate Centers' ACIS; GHCN-Daily runs a few days behind and may revise them.` }) : null,
     fc || historical ? null : h("p", { className: "fine", text: forecast.status === "rejected" && !/covers the US/.test(forecast.reason?.message || "")
       ? "The National Weather Service forecast could not be reached just now. Reload the page to try again."
-      : "No National Weather Service forecast is available for this station." }));
+      : "No National Weather Service forecast is available for this station." }),
+    L && subDay(Ldate) ? subNote() : null);
   const pick = (r) => r && {
     date: r.date, high: round(r.tmax), low: round(r.tmin), precip: round(r.prcp, U.pd), snow: round(r.snow, 1), pop: round(r.pop),
     normal_high: round(r.n_hi), normal_low: round(r.n_lo), high_vs_normal: round(r.dep_hi), low_vs_normal: round(r.dep_lo),
@@ -616,7 +643,8 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     record_high: round(r.rec_hi), record_high_year: r.rec_hi_yr, record_low: round(r.rec_lo), record_low_year: r.rec_lo_yr,
     record_precip: round(r.rec_prcp, U.pd), record_precip_year: r.rec_prcp_yr, years_of_record: r.n_years,
   };
-  facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate), latest_label: latestLabel, today_forecast: fc ? pick(T) : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
+  facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate),
+    latest_from_nearby_station: subDay(Ldate) ? `${subDay(Ldate).source_name}, ${Math.round(subDay(Ldate).distance_km)} km away (this station had not reported)` : null, latest_label: latestLabel, today_forecast: fc ? pick(T) : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
 
   // ---- 2. Past 5 and next 5 days
   const win = winDates.map(day);
@@ -634,11 +662,11 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     const prRows = win.filter((r) => isNum(r.prcp)).map((r) => ({ date: r.date, value: r.prcp, kind: r.kind === "observed" ? "Observed" : "Forecast" }));
     const tr = win.map((r) => h("tr", { className: r.kind === "forecast" ? "alm-fc" : "" },
       h("th", { scope: "row", text: `${fmtDay(r.date)}${r.date === D ? " (today)" : ""}` }),
-      hasT ? h("td", { text: `${F.t(r.tmax)} ${F.dep(r.dep_hi)}`.trim() }) : null,
-      hasT ? h("td", { text: `${F.t(r.tmin)} ${F.dep(r.dep_lo)}`.trim() }) : null,
-      hasP ? h("td", { text: r.kind === "forecast" && isNum(r.pop) ? `${F.p(r.prcp)} (${Math.round(r.pop)}%)` : F.p(r.prcp) }) : null,
-      hasSnow ? h("td", { text: F.s(r.snow) }) : null,
-      h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : !isNum(r.tmax) && !isNum(r.prcp) ? "Not yet reported" : provisional.has(r.date) ? "Provisional" : "Observed" })));
+      hasT ? h("td", { text: `${F.t(r.tmax)}${star(r.date, "TMAX")} ${F.dep(r.dep_hi)}`.trim() }) : null,
+      hasT ? h("td", { text: `${F.t(r.tmin)}${star(r.date, "TMIN")} ${F.dep(r.dep_lo)}`.trim() }) : null,
+      hasP ? h("td", { text: r.kind === "forecast" && isNum(r.pop) ? `${F.p(r.prcp)} (${Math.round(r.pop)}%)` : `${F.p(r.prcp)}${star(r.date, "PRCP")}` }) : null,
+      hasSnow ? h("td", { text: `${F.s(r.snow)}${star(r.date, "SNOW")}` }) : null,
+      h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : !isNum(r.tmax) && !isNum(r.prcp) ? "Not yet reported" : subDay(r.date) ? "Nearby station*" : provisional.has(r.date) ? "Provisional" : "Observed" })));
     section("outlook", "The past 5 days and the next 5",
       hasT ? chart(windowChart(chartRows, D, U), "Daily highs and lows with normals and records") : null,
       hasP && prRows.some((r) => r.value > 0) ? chart(precipBars(prRows, U, "Precipitation"), "Daily precipitation") : null,
@@ -646,9 +674,11 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
         h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Day" }),
           hasT ? h("th", { scope: "col", text: "High (vs normal)" }) : null, hasT ? h("th", { scope: "col", text: "Low (vs normal)" }) : null,
           hasP ? h("th", { scope: "col", text: "Precip" }) : null, hasSnow ? h("th", { scope: "col", text: "Snow" }) : null, h("td"))),
-        h("tbody", {}, tr))));
+        h("tbody", {}, tr))),
+      win.some((r) => r.kind !== "forecast" && subDay(r.date)) ? subNote() : null);
     facts.outlook = {
-      days: win.map(pick).map((x, i) => ({ ...x, kind: win[i].kind === "observed" && provisional.has(win[i].date) ? "observed (provisional)" : win[i].kind })),
+      days: win.map(pick).map((x, i) => ({ ...x, kind: win[i].kind === "observed" && subDay(win[i].date) ? `from nearby station ${subDay(win[i].date).source_name} (this station had not reported)`
+        : win[i].kind === "observed" && provisional.has(win[i].date) ? "observed (provisional)" : win[i].kind })),
       nws_text_forecast: fc?.text_forecast?.slice(0, 8) || [],
       forecast_issued: fc?.issued || null,
       class_scale: "classes compare each value with this station's 1991-2020 values within 7 days of the date: much below <10th percentile, below <30th, near normal 30-70th, above >70th, much above >90th; near the record means within " + U.near + U.t,
@@ -870,7 +900,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       ffacts.push({
         threshold: f.label, status, median_date: p50, early_10pct: p10, late_90pct: p90,
         normal_source: o("50") ? "NOAA 1991–2020 normals" : "this station's 1991–2020 record",
-        this_season: observed || null, forecast_date: fcDate,
+        this_season: observed || null, this_season_from_nearby_station: observed && subs.has(`TMIN|${observed}`) ? subs.get(`TMIN|${observed}`).source_name : null, forecast_date: fcDate,
         possible_date: possible?.date || null, possible_forecast_low: possible ? round(possible.low) : null,
         timing_vs_1991_2020: dateForPct ? { date: dateForPct, percent_of_seasons_by_then: pct === null ? null : Math.round(pct * 100), class: usual(pct) } : null,
         percent_of_1991_2020_seasons_by_end_of_forecast: byFcEnd === null ? null : Math.round(byFcEnd * 100),
@@ -894,11 +924,12 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
           h("th", { scope: "col", text: "Compared with 1991–2020" }), h("th", { scope: "col", text: "Earliest" }), h("th", { scope: "col", text: "Latest" }))),
         h("tbody", {}, ffacts.map((x) => h("tr", {}, h("th", { scope: "row", text: x.threshold }),
           h("td", { text: x.median_date ? fmtDay(`2000-${x.median_date}`, { month: "short", day: "numeric" }) : "–" }),
-          h("td", { text: x.this_season ? fmtDay(x.this_season, { month: "short", day: "numeric" }) : fall ? "Not yet" : "None yet" }),
+          h("td", { text: x.this_season ? `${fmtDay(x.this_season, { month: "short", day: "numeric" })}${star(x.this_season, "TMIN")}` : fall ? "Not yet" : "None yet" }),
           h("td", { text: x.forecast_date ? `${short(x.forecast_date)}` : x.possible_date ? `Possible ${short(x.possible_date)} (low ${F.t(x.possible_forecast_low)})` : x.status === "occurred" ? "–" : "None forecast" }),
           h("td", { className: "alm-wrap", text: x.comparison }),
           h("td", { text: x.earliest_on_record ? fmtDay(x.earliest_on_record, { month: "short", day: "numeric", year: "numeric" }) : "–" }),
           h("td", { text: x.latest_on_record ? fmtDay(x.latest_on_record, { month: "short", day: "numeric", year: "numeric" }) : "–" })))))),
+      ffacts.some((x) => x.this_season && subs.has(`TMIN|${x.this_season}`)) ? subNote() : null,
       fcNights.length ? h("h3", { text: "Forecast lows" }) : null,
       fcNights.length ? h("div", { className: "alm-scroll" }, h("table", { className: "alm-table" },
         h("thead", {}, h("tr", {}, h("th", { scope: "col", text: "Morning of" }), h("th", { scope: "col", text: "Forecast low" }), h("th", { scope: "col", text: "Reaches" }))),
@@ -1074,7 +1105,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   // ---- Footer
   page.append(h("footer", { className: "alm-foot" },
     h("p", { className: "alm-ai", text: "This almanac is generated automatically. Its numbers are computed from NOAA data, and the text in the blue boxes is written by an AI model, so it may make mistakes; check important values against the sources." }),
-    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional, not yet in GHCN-Daily)` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020${source.temperature?.startsWith("NOAA") ? "" : " (not available for this station; normals computed from its own 1991–2020 data)"}; National Weather Service forecast${fc ? ` (NDFD grid ${fc.nws_grid}, issued ${new Date(fc.issued).toLocaleString()})` : ""}. Records use this station's own history and may differ from official records.` })));
+    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional, not yet in GHCN-Daily)` : ""}${subRows.length ? `; days this station had not reported filled from the nearest station that had (marked *)` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020${source.temperature?.startsWith("NOAA") ? "" : " (not available for this station; normals computed from its own 1991–2020 data)"}; National Weather Service forecast${fc ? ` (NDFD grid ${fc.nws_grid}, issued ${new Date(fc.issued).toLocaleString()})` : ""}. Records use this station's own history and may differ from official records.` })));
 
   // ---- Text: templates now, the model's when it answers
   const templates = templateText(facts, U, F);

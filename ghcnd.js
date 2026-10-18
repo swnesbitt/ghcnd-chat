@@ -110,6 +110,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       FROM 'station_index.parquet';
     CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);
     CREATE TABLE provisional (station VARCHAR, element VARCHAR, date DATE);
+    CREATE TABLE substituted (station VARCHAR, element VARCHAR, date DATE, source VARCHAR, source_name VARCHAR, distance_km DOUBLE);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
   `);
   for (const [el, e] of Object.entries(ELEMENTS)) {
@@ -404,6 +405,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       }
       const scale = ELEMENTS[p.el].scale;
       await q(`DELETE FROM obs WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
+      await q(`DELETE FROM substituted WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`
         CREATE OR REPLACE TEMP TABLE _raw AS ${parts.join(" UNION ALL ")};
         INSERT INTO obs
@@ -507,13 +509,8 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     // 10 °F to spare, and to high ≥ low.
     const tCol = els.indexOf("TMAX") + 1;
     const nCol = els.indexOf("TMIN") + 1;
-    const bounds = Object.fromEntries(toRows(await q(`
-      SELECT element, month(date) AS m, min(value) AS lo, max(value) AS hi FROM obs
-      WHERE station = ${sqlString(id)} AND element IN ('TMAX', 'TMIN') GROUP BY 1, 2`)).map((r) => [`${r.element}|${r.m}`, r]));
-    const plausible = (el, date, c) => {
-      const b = bounds[`${el}|${Number(date.slice(5, 7))}`];
-      return !b || (c >= b.lo - 5.6 && c <= b.hi + 5.6);
-    };
+    const bounds = await tempBounds(id);
+    const plausible = bounds.ok;
     const rows = [];
     const skipped = [];
     for (const rec of body.data || []) {
@@ -554,6 +551,91 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     }
     const dates = rows.map((r) => r.date).sort();
     return { added: rows.length, by_element: by, last_date: lastDate, first_date: dates[0], last_any: dates[dates.length - 1] };
+  }
+
+  // Days a station has not reported (in GHCN-Daily or ACIS), filled from the
+  // nearest station within max_km that has them, by ACIS. The values go into
+  // obs under the requested station and are listed in table substituted,
+  // so pages can mark them. Only past days (before today) are filled.
+  async function fillNeighbors({ station, elements = ["TMAX", "TMIN", "PRCP"], start_date, end_date, max_km = 40 } = {}) {
+    const id = String(station || "").toUpperCase();
+    const els = elements.filter((e) => ACIS_ELEMS[e]);
+    const today = new Date().toLocaleDateString("en-CA");
+    const end = end_date && end_date < today ? end_date : new Date(Date.parse(`${today}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+    if (!els.length || !start_date || start_date > end) return [];
+    const days = [];
+    for (let t = Date.parse(`${start_date}T00:00:00Z`); t <= Date.parse(`${end}T00:00:00Z`); t += 864e5) days.push(new Date(t).toISOString().slice(0, 10));
+    const have = new Set(toRows(await q(`
+      SELECT element, strftime(date, '%Y-%m-%d') AS d FROM obs
+      WHERE station = ${sqlString(id)} AND date BETWEEN DATE '${start_date}' AND DATE '${end}'`)).map((r) => `${r.element}|${r.d}`));
+    // Only elements the station actually reports now (no point filling SNOW for a station without it).
+    const reports = new Set(toRows(await q(`SELECT DISTINCT element FROM obs WHERE station = ${sqlString(id)} AND date > DATE '${start_date}' - INTERVAL 60 DAY`)).map((r) => r.element));
+    let missing = [];
+    for (const d of days) for (const el of els) if (reports.has(el) && !have.has(`${el}|${d}`)) missing.push({ el, d });
+    if (!missing.length) return [];
+    const me = toRows(await q(`SELECT lat, lon FROM stations WHERE id = ${sqlString(id)}`))[0];
+    if (!me) return [];
+    const year = Number(end.slice(0, 4));
+    // The nearest few current stations for each element still missing (many
+    // precipitation-only networks sit closer than any thermometer).
+    const need = [...new Set(missing.map((m) => m.el))];
+    const near = toRows(await q(`
+      WITH c AS (
+        SELECT s.id, s.name, c.element, ${distanceSql({ lat: me.lat, lon: me.lon })} AS km FROM stations s
+        JOIN coverage c ON c.id = s.id AND c.element IN (${need.map(sqlString).join(", ")}) AND c.last_year >= ${year - 1}
+        WHERE s.id <> ${sqlString(id)} AND abs(s.lat - ${me.lat}) < 1 AND abs(s.lon - ${me.lon}) < 1.5),
+      r AS (SELECT *, row_number() OVER (PARTITION BY element ORDER BY km) AS n FROM c WHERE km <= ${Number(max_km)})
+      SELECT id, any_value(name) AS name, min(km) AS km, list(element) AS els FROM r WHERE n <= 4 GROUP BY id ORDER BY km`));
+    const bounds = await tempBounds(id);
+    const rows = [];
+    for (const s of near) {
+      if (!missing.length) break;
+      const has = new Set(Array.isArray(s.els) ? s.els : String(s.els).replace(/[[\]]/g, "").split(",").map((x) => x.trim()));
+      const want = [...new Set(missing.map((m) => m.el))].filter((e) => has.has(e));
+      if (!want.length) continue;
+      const dates = missing.map((m) => m.d).sort();
+      const params = new URLSearchParams({ sid: s.id, sdate: dates[0], edate: dates[dates.length - 1], elems: want.map((e) => ACIS_ELEMS[e]).join(","), output: "json" });
+      let body;
+      try {
+        const resp = await fetch(`${ACIS}?${params}`);
+        body = resp.ok ? await resp.json() : null;
+      } catch {
+        body = null;
+      }
+      if (!body || body.error) continue;
+      const byDate = new Map((body.data || []).map((r) => [r[0], r]));
+      missing = missing.filter(({ el, d }) => {
+        if (!want.includes(el)) return true;
+        const rec = byDate.get(d);
+        if (!rec) return true;
+        const raw = String(rec[want.indexOf(el) + 1] ?? "M").trim();
+        if (raw === "M" || raw === "S" || raw === "") return true;
+        const v = raw === "T" ? 0 : parseFloat(raw);
+        if (!Number.isFinite(v)) return true;
+        const value = el === "TMAX" || el === "TMIN" ? Math.round(((v - 32) * 5) / 9 * 10) / 10
+          : el === "PRCP" ? Math.round(v * 25.4 * 10) / 10 : Math.round(v * 25.4);
+        if ((el === "TMAX" || el === "TMIN") && !bounds.ok(el, d, value)) return true;
+        rows.push({ el, d, value, trace: raw === "T", source: s.id, name: s.name, km: s.km });
+        return false;
+      });
+    }
+    if (!rows.length) return [];
+    await q(`INSERT INTO obs VALUES ${rows.map((r) =>
+      `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.d}', ${r.value}, ${r.trace ? "'T'" : "NULL"}, NULL)`).join(", ")}`);
+    await q(`INSERT INTO substituted VALUES ${rows.map((r) =>
+      `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.d}', ${sqlString(r.source)}, ${sqlString(r.name)}, ${r.km})`).join(", ")}`);
+    return rows.map((r) => ({ element: r.el, date: r.d, source: r.source, source_name: r.name, distance_km: Math.round(r.km * 10) / 10 }));
+  }
+
+  // The station's own temperature range by month, for checking unreviewed values.
+  async function tempBounds(id) {
+    const b = Object.fromEntries(toRows(await q(`
+      SELECT element, month(date) AS m, min(value) AS lo, max(value) AS hi FROM obs
+      WHERE station = ${sqlString(id)} AND element IN ('TMAX', 'TMIN') GROUP BY 1, 2`)).map((r) => [`${r.element}|${r.m}`, r]));
+    return { ok: (el, date, c) => {
+      const x = b[`${el}|${Number(date.slice(5, 7))}`];
+      return !x || (c >= x.lo - 5.6 && c <= x.hi + 5.6);
+    } };
   }
 
   // Every station in an area for a short period, from by_year files. Those
@@ -906,6 +988,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   return {
     db,
     findStations,
+    fillNeighbors,
     loadSeries,
     loadArea,
     loadRecords,

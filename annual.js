@@ -316,6 +316,18 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
   const hasS = loaded.has("SNOW");
   if (!hasT && !hasP) throw new Error(`${st.name} (${st.id}) has no temperature or precipitation record.`);
 
+  // The last 10 days the station has not reported, from the nearest station that has them.
+  const today = new Date().toLocaleDateString("en-CA");
+  const shift = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+  try {
+    await g.fillNeighbors({ station: st.id, elements: ["TMAX", "TMIN", "PRCP", "SNOW"], start_date: shift(today, -10), end_date: shift(today, -1) });
+  } catch (err) {
+    deps.logEvent("annual nearby fill", err.message);
+  }
+  const subRows = await g.sql(`SELECT element, strftime(date, '%Y-%m-%d') AS d, source, source_name, distance_km FROM substituted WHERE station = ${sq(st.id)}`);
+  const subBy = new Map(subRows.map((r) => [r.d, r]));
+  const subTag = (date) => (subBy.has(date) ? ` * from ${subBy.get(date).source_name}` : "");
+
   onStatus("Computing normals, records and yearly statistics");
   await g.sql(`
     CREATE OR REPLACE TABLE ann_daily AS
@@ -602,7 +614,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
         setLo += sl;
         return {
           date, norm_hi: n.tmax, norm_lo: n.tmin, rec_hi: r.rec_hi, rec_lo: r.rec_lo, obs_hi: o.tmax ?? null, obs_lo: o.tmin ?? null, set_hi: sh, set_lo: sl,
-          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (provisional.has(date) ? " (provisional)" : ""),
+          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (subBy.has(date) ? subTag(date) : provisional.has(date) ? " (provisional)" : ""),
           t_obs: isNum(o.tmax) || isNum(o.tmin) ? `${F.t(o.tmax)} / ${F.t(o.tmin)}${sh ? " (record high)" : ""}${sl ? " (record low)" : ""}` : date > latest ? "Not yet" : "Not reported",
           t_norm: `${F.t(n.tmax)} / ${F.t(n.tmin)}`,
           t_mean: `${F.t(r.mean_hi)} / ${F.t(r.mean_lo)}`,
@@ -706,7 +718,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
         const r = rec.get(m) || {};
         return {
           date, day: isNum(d) ? d : null, cum: future ? null : cum, norm_cum: annualNormal > 0 ? ncum : null, env_hi: e.hi, env_lo: e.lo,
-          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (provisional.has(date) ? " (provisional)" : ""),
+          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (subBy.has(date) ? subTag(date) : provisional.has(date) ? " (provisional)" : ""),
           t_day: isNum(d) ? F.p(d) : future ? "Not yet" : "Not reported",
           t_cum: future ? "–" : `${F.p(cum)}${ncum > 0 ? ` (${Math.round((100 * cum) / ncum)}% of normal)` : ""}`,
           t_norm: F.p(ncum),
@@ -812,7 +824,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
         const r = rec.get(m) || {};
         return {
           date, day: isNum(d) ? d : null, cum: future ? null : cum, norm_cum: normalSeason > 0 ? ncum : null, env_hi: e.hi, env_lo: e.lo,
-          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (provisional.has(date) ? " (provisional)" : ""),
+          t_date: fmtDay(date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) + (subBy.has(date) ? subTag(date) : provisional.has(date) ? " (provisional)" : ""),
           t_day: isNum(d) ? F.s(d) : future ? "Not yet" : "Not reported",
           t_cum: future ? "–" : F.s(cum), t_norm: F.s(ncum),
           t_hi: isNum(e.hi) ? `${F.s(e.hi)} (${seasonLabel(e.hi_s)})` : "–",
@@ -847,7 +859,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
     ? "The summaries are written by an AI model from the numbers on this page, so they may make mistakes; check important values against the charts and tables."
     : "Sign in to Lumen on the GHCN chat tab for AI-written summaries; until then they are plain templated text." });
   page.append(h("footer", { className: "alm-foot" }, aiNote,
-    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id}, ${firstYear}–${latest.slice(0, 4)})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional)` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020 where available, otherwise this station's own 1991–2020 averages. Records, ranges and ranks use this station's own history and may differ from official records; a year counts as complete with at least 90% of its days reported. Köppen class after Peel et al. (2007) and Beck et al. (2018).` })));
+    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id}, ${firstYear}–${latest.slice(0, 4)})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional)` : ""}${subRows.length ? `; ${[...new Set(subRows.map((r) => fmtDay(r.d, { month: "short", day: "numeric" })))].join(", ")} not reported here and shown from ${[...new Set(subRows.map((r) => `${r.source_name} (${r.source})`))].join(" and ")}, marked * in the day values` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020 where available, otherwise this station's own 1991–2020 averages. Records, ranges and ranks use this station's own history and may differ from official records; a year counts as complete with at least 90% of its days reported. Köppen class after Peel et al. (2007) and Beck et al. (2018).` })));
 
   onStatus("Drawing charts");
   if (state.updateT) await state.updateT(state.tYear);

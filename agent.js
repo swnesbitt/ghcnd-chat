@@ -30,6 +30,7 @@ Data rules:
 - Cooperative observers report the max and min for the 24 hours ending at obs_time, often in the morning, so a reported high often comes from the previous afternoon. This is normal practice; do not point it out in ordinary answers. Mention it only when it changes a conclusion, such as comparing one calendar day's extremes across stations with different observation times.
 - TAVG is sparse at US stations; use (TMAX + TMIN) / 2 from same-day pairs for daily mean temperature.
 - GHCN-Daily runs a few days behind. load_series fills the newest days for US stations from ACIS (the Regional Climate Centers' database); those values are provisional and listed in table provisional(station, element, date). Say so when an answer uses them.
+- If the almanac pages were opened this session, days a station had not reported may have been filled from a nearby station; those rows are listed in table substituted(station, element, date, source, source_name, distance_km). Exclude them from records and statistics (join and filter them out) unless the user wants them, and say which station they came from when you show them.
 
 SQL is DuckDB, not SQLite:
 - Dates: year(date), month(date), day(date), strftime(date, '%m-%d') with the date first, date_diff('day', a, b). There is no 'now'.
