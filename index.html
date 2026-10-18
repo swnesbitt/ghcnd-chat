@@ -43,7 +43,8 @@
 
   <nav class="tabs" role="tablist" aria-label="Views">
     <button type="button" role="tab" id="tab-chat" aria-controls="panel-chat" aria-selected="true">GHCN chat</button>
-    <button type="button" role="tab" id="tab-almanac" aria-controls="panel-almanac" aria-selected="false" tabindex="-1">Climate at a glance</button>
+    <button type="button" role="tab" id="tab-almanac" aria-controls="panel-almanac" aria-selected="false" tabindex="-1">Daily almanac</button>
+    <button type="button" role="tab" id="tab-annual" aria-controls="panel-annual" aria-selected="false" tabindex="-1">Annual climate</button>
   </nav>
 
   <p id="banner" class="banner" role="alert" hidden></p>
@@ -126,6 +127,23 @@
       <p id="alm-status" class="status" aria-live="polite"></p>
       <div id="alm-out" aria-live="polite">
         <p class="fine">An almanac for any GHCN-Daily station: the latest observations and the forecast against normals and records, the past year, frost and freeze dates, and degree days. Link to one directly with <code>?station=USC00118740</code> or <code>?place=Champaign, IL</code>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-annual" role="tabpanel" aria-labelledby="tab-annual" hidden>
+    <div class="almanac ann-page">
+      <form id="ann-form" class="alm-form">
+        <label for="ann-input">Station, place or GHCN-Daily ID</label>
+        <div class="alm-row">
+          <input id="ann-input" type="text" autocomplete="off" placeholder="Champaign, IL or USC00118740">
+          <button type="submit" class="primary">Show annual climate</button>
+        </div>
+      </form>
+      <section id="ann-choices" class="alm-choices" aria-labelledby="ann-choices-h" hidden></section>
+      <p id="ann-status" class="status" aria-live="polite"></p>
+      <div id="ann-out" aria-live="polite">
+        <p class="fine">A year of daily highs and lows, precipitation and snowfall for any GHCN-Daily station, against its 1991–2020 normals and its records, with every year on record and a summary of the station's climate. Pick any year, including this one so far; hover over a day for its values. Link to one directly with <code>?annual=USC00118740</code> and <code>&amp;year=2012</code>.</p>
       </div>
     </div>
   </div>

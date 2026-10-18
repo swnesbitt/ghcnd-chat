@@ -159,7 +159,8 @@ class Handler(BaseHTTPRequestHandler):
         if not body.get("tools"):
             # The almanac asks for its text boxes as JSON, without tools.
             text = json.dumps({k: f"MOCK-NARRATIVE {k}: written from the numbers given." for k in
-                               ("now", "outlook", "past_year", "frost", "degree_days")})
+                               ("now", "outlook", "past_year", "frost", "degree_days",
+                                                                                       "temperature", "precipitation", "snowfall")})
             return self.reply(200, {"choices": [{"index": 0, "message": {"role": "assistant", "content": "```json\n" + text + "\n```"}}]})
         if n_tools < len(SCRIPT):
             name, args = SCRIPT[n_tools]

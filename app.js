@@ -5,6 +5,7 @@ import { CONFIG } from "./config.js";
 import { runTurn } from "./agent.js";
 import { cleanModelText } from "./format.js";
 import { initAlmanac, renderAlmanac, findNearby } from "./almanac.js";
+import { initAnnual, renderAnnual } from "./annual.js";
 import { marked } from "https://cdn.jsdelivr.net/npm/marked@18.1.1/+esm";
 import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.4.17/+esm";
 
@@ -378,9 +379,10 @@ function onStep(s) {
 
 let vegaPromise = null;
 const charts = []; // redraw functions, so charts follow a light/dark switch
+const nodeCharts = new Map(); // almanac and annual charts: the latest draw for each figure
 
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  for (const draw of charts) draw().catch(() => {});
+  for (const draw of [...charts, ...nodeCharts.values()]) draw().catch(() => {});
 });
 
 function chartConfig() {
@@ -719,22 +721,31 @@ async function makeChart(args) {
   return { ok: true, rows: rows.length, truncated, note: "The chart is shown to the user." };
 }
 
-// Shared chart drawing for the almanac (same libraries and theme as make_chart).
-async function embedChart(node, spec) {
+// Shared chart drawing for the almanac and annual pages (same libraries and
+// theme as make_chart). onView(view) runs after every draw, for listeners.
+const nodeViews = new Map();
+async function embedChart(node, spec, onView = null) {
   vegaPromise ||= Promise.all([
     import("https://cdn.jsdelivr.net/npm/vega-embed@7.3.0/+esm"),
     import("https://cdn.jsdelivr.net/npm/vega-interpreter@2.3.2/+esm"),
   ]);
   const [{ default: embed }, { expressionInterpreter }] = await vegaPromise;
   const full = { $schema: "https://vega.github.io/schema/vega-lite/v6.json", ...spec };
-  const draw = () => embed(node, full, {
-    ast: true,
-    expr: expressionInterpreter,
-    config: chartConfig(),
-    actions: { export: true, source: false, compiled: false, editor: false },
-  });
+  const draw = async () => {
+    nodeViews.get(node)?.finalize();
+    const result = await embed(node, full, {
+      ast: true,
+      expr: expressionInterpreter,
+      config: chartConfig(),
+      actions: { export: true, source: false, compiled: false, editor: false },
+    });
+    nodeViews.set(node, result);
+    if (onView) onView(result.view);
+    return result;
+  };
   await draw();
-  charts.push(draw);
+  for (const n of nodeCharts.keys()) if (!n.isConnected) { nodeCharts.delete(n); nodeViews.get(n)?.finalize(); nodeViews.delete(n); }
+  nodeCharts.set(node, draw);
 }
 
 // ---------------------------------------------------------------------------
@@ -844,9 +855,9 @@ for (const b of document.querySelectorAll(".examples button")) {
 }
 
 // ---------------------------------------------------------------------------
-// Tabs: GHCN chat and Climate at a glance
+// Tabs: GHCN chat, Daily almanac and Annual climate
 
-const TABS = ["chat", "almanac"];
+const TABS = ["chat", "almanac", "annual"];
 
 function selectTab(name, { focus = false } = {}) {
   for (const t of TABS) {
@@ -858,6 +869,11 @@ function selectTab(name, { focus = false } = {}) {
     if (on && focus) tab.focus();
   }
   if (name === "chat" && location.search) history.replaceState(null, "", location.pathname + location.hash);
+  const params = new URLSearchParams(location.search);
+  if ((name === "almanac" && params.has("annual")) || (name === "annual" && ["station", "place", "id"].some((k) => params.has(k)))) {
+    history.replaceState(null, "", location.pathname);
+  }
+  if (name === "annual" && !location.search.includes("annual=") && location.hash !== "#annual") history.replaceState(null, "", `${location.pathname}#annual`);
 }
 
 for (const t of TABS) {
@@ -909,8 +925,7 @@ async function showAlmanac(query, asOf = null) {
 // another station in the list switches to it. A station ID skips the list.
 const STATION_ID = /^[A-Z0-9]{11}$/i;
 
-function renderChoices(near, selected) {
-  const box = $("alm-choices");
+function renderChoices(near, selected, { box = $("alm-choices"), busy = () => almanacRunning, pick = (id) => showAlmanac(id), what = "The almanac" } = {}) {
   const us = near.place?.country === "US" || near.stations[0]?.country === "US";
   const dist = (km) => (us ? `${(km * 0.6214).toFixed(km < 16 ? 1 : 0)} mi` : `${km.toFixed(km < 10 ? 1 : 0)} km`);
   const span = (c, name) => (c ? `${name} ${c.first}–${c.last}` : null);
@@ -934,10 +949,10 @@ function renderChoices(near, selected) {
         isSel ? el("span", { className: "alm-st-sel", textContent: st.id === near.recommended ? "Selected: the nearest long, current record" : "Selected" }) : st.id === near.recommended ? el("span", { className: "alm-st-meta", textContent: "Recommended: the nearest long, current record" }) : null);
       if (isSel) btn.setAttribute("aria-current", "true");
       btn.addEventListener("click", () => {
-        if (almanacRunning || st.id === selected) return;
+        if (busy() || st.id === selected) return;
         selected = st.id;
         draw();
-        showAlmanac(st.id);
+        pick(st.id);
       });
       return el("li", {}, btn);
     }));
@@ -950,8 +965,8 @@ function renderChoices(near, selected) {
   });
   draw();
   const placeName = near.place ? `${near.place.name}, ${near.place.country === "US" ? near.place.admin1 : near.place.country}` : "here";
-  box.replaceChildren(el("h2", { id: "alm-choices-h", textContent: `Stations near ${placeName}` }),
-    el("p", { className: "fine", textContent: "The almanac uses the nearest station with a long, current temperature and precipitation record. Pick another to switch." }), list, more);
+  box.replaceChildren(el("h2", { id: `${box.id}-h`, textContent: `Stations near ${placeName}` }),
+    el("p", { className: "fine", textContent: `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }), list, more);
   box.hidden = false;
 }
 
@@ -981,6 +996,87 @@ $("alm-form").addEventListener("submit", (e) => {
   startAlmanac($("alm-input").value);
 });
 
+// ---------------------------------------------------------------------------
+// Annual climate
+
+initAnnual({
+  startData,
+  lumen,
+  getModel: () => $("model").value || CONFIG.preferredModel,
+  embedChart,
+  renderMarkdown: (t) => DOMPurify.sanitize(marked.parse(cleanModelText(t))),
+  logEvent,
+});
+
+let annualRunning = false;
+async function showAnnual(query, year = null) {
+  if (annualRunning || !query.trim()) return;
+  annualRunning = true;
+  const out = $("ann-out");
+  const setStatus = (t) => ($("ann-status").textContent = t);
+  logbook.turn = { question: `Annual climate for ${query}`, started: new Date().toISOString(), entries: [] };
+  $("ann-form").querySelector("button").disabled = true;
+  try {
+    let id = null;
+    const r = await renderAnnual(out, query, {
+      onStatus: setStatus, year,
+      onYear: (s) => {
+        if (id) history.replaceState(null, "", `${location.pathname}?annual=${id}&year=${s.tYear ?? s.pYear}`);
+      },
+    });
+    id = r.station.id;
+    history.replaceState(null, "", `${location.pathname}?annual=${id}${year ? `&year=${r.state.tYear ?? r.state.pYear}` : ""}`);
+    document.title = `${r.station.name} annual climate | GHCN-Daily Chat`;
+  } catch (err) {
+    setStatus("");
+    logEvent("annual failed", err?.stack || err?.message || String(err));
+    out.replaceChildren(el("div", { className: "error-block" },
+      el("p", { className: "error-text", textContent: err.message || String(err) }), copyLogButton()));
+  } finally {
+    annualRunning = false;
+    $("ann-form").querySelector("button").disabled = false;
+  }
+}
+
+async function startAnnual(query, year = null) {
+  const q = String(query || "").trim();
+  if (!q || annualRunning) return;
+  if (STATION_ID.test(q)) {
+    $("ann-choices").hidden = true;
+    return showAnnual(q.toUpperCase(), year);
+  }
+  $("ann-status").textContent = "Finding stations";
+  try {
+    const near = await findNearby(q);
+    renderChoices(near, near.recommended, { box: $("ann-choices"), busy: () => annualRunning, pick: (id) => showAnnual(id), what: "This page" });
+    return showAnnual(near.recommended, year);
+  } catch (err) {
+    $("ann-status").textContent = "";
+    $("ann-choices").hidden = true;
+    logEvent("annual failed", err?.message || String(err));
+    $("ann-out").replaceChildren(el("div", { className: "error-block" },
+      el("p", { className: "error-text", textContent: err.message || String(err) }), copyLogButton()));
+  }
+}
+
+$("ann-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  startAnnual($("ann-input").value);
+});
+
+// ?annual=USC00118740 (or a place), with &year=2012, opens the annual page directly.
+function annualFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const q = p.get("annual");
+  if (!q && location.hash !== "#annual") return false;
+  selectTab("annual");
+  if (q) {
+    $("ann-input").value = q;
+    startAnnual(q, p.get("year") ? Number(p.get("year")) : null);
+  }
+  return true;
+}
+
 // ?station=USC00118740, ?id=..., or ?place=Champaign, IL open the almanac directly.
 function almanacFromUrl() {
   const p = new URLSearchParams(location.search);
@@ -1003,7 +1099,7 @@ function almanacFromUrl() {
   } catch (err) {
     showBanner(err.message);
   }
-  almanacFromUrl();
+  if (!annualFromUrl()) almanacFromUrl();
   if (lumen.getKey()) await showApp();
   else showConnect();
 })();

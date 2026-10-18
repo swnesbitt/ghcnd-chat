@@ -419,6 +419,27 @@ a:hover { color: var(--accent); }
   .connect h1 { font-size: 1.5rem; }
 }
 
+/* ---- Annual climate ------------------------------------------------------ */
+
+.ann-koppen { margin: 0.5rem 0 0; font-size: 1.0625rem; }
+.ann-koppen strong { font-family: var(--font-heading); }
+.ann-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem; margin-bottom: 0.5rem; }
+.ann-title h2 { margin: 0; }
+.ann-pick { font-weight: 600; display: inline-flex; align-items: center; gap: 0.5rem; }
+.ann-select { padding: 0.35rem 0.5rem; font: inherit; border: 1px solid var(--ink-soft); background: var(--surface); color: inherit; }
+.ann .alm-chart { margin-bottom: 0.25rem; }
+.ann-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0 0 1rem; padding: 0; font-size: 0.875rem; color: var(--ink-soft); }
+.ann-legend li { display: inline-flex; align-items: center; gap: 0.4rem; }
+.ann-key { display: inline-block; flex: none; }
+.ann-key-band { width: 1.4rem; height: 0.8rem; background: var(--c); }
+.ann-key-bar { width: 0.25rem; height: 1rem; background: var(--c); }
+.ann-key-line { width: 1.4rem; height: 3px; background: var(--c); }
+.ann-key-dash { width: 1.4rem; height: 0; border-top: 2px dashed var(--c); }
+.ann-key-tri { width: 0; height: 0; border-left: 0.35rem solid transparent; border-right: 0.35rem solid transparent; border-bottom: 0.6rem solid var(--c); }
+.ann-table td { white-space: normal; }
+.ann .alm-section h3 { margin-top: 1.75rem; }
+.ann .alm-box { margin-top: 1rem; }
+
 /* ---- Daily email ---------------------------------------------------------- */
 
 .ntf h1 { font-size: 1.75rem; font-weight: 700; margin: 0.5rem 0 0.75rem; }

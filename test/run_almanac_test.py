@@ -1,4 +1,4 @@
-"""Browser test for the Climate at a glance tab, against the real NOAA, NCEI and
+"""Browser test for the Daily almanac tab, against the real NOAA, NCEI and
 NWS services and the scripted mock Lumen.
 
     python test/run_almanac_test.py [--chrome /path/to/chrome] [--out DIR]

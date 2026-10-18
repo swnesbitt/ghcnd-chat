@@ -1,4 +1,4 @@
-// almanac.js — "Climate at a glance": an almanac page for one GHCN-Daily station.
+// almanac.js — the Daily almanac: an almanac page for one GHCN-Daily station.
 //
 // Everything numeric is computed here, deterministically, from the station's
 // full GHCN-Daily record, NOAA's 1991-2020 normals (NCEI; computed from the
@@ -41,7 +41,7 @@ const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const round = (v, d = 0) => (isNum(v) ? Math.round(v * 10 ** d) / 10 ** d : null);
 const md = (s) => s.slice(5); // "2026-10-17" -> "10-17"
 
-function unitsFor(country) {
+export function unitsFor(country) {
   if (country === "US") {
     return {
       us: true, t: "°F", p: "in", s: "in",
@@ -60,7 +60,7 @@ function unitsFor(country) {
   };
 }
 
-function formatters(U) {
+export function formatters(U) {
   const t = (v) => (isNum(v) ? `${Math.round(v)}${U.t}` : "–");
   const dep = (v, d = 0) => (isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toFixed(d)}°` : "");
   const p = (v) => (isNum(v) ? (v === 0 ? `0 ${U.p}` : `${v.toFixed(U.pd)} ${U.p}`) : "–");
@@ -101,7 +101,7 @@ const ncei = (s) => {
 };
 
 // The 366 month-days of a leap year, in order.
-const MONTH_DAYS = Array.from({ length: 366 }, (_, i) => new Date(Date.UTC(2000, 0, 1 + i)).toISOString().slice(5, 10));
+export const MONTH_DAYS = Array.from({ length: 366 }, (_, i) => new Date(Date.UTC(2000, 0, 1 + i)).toISOString().slice(5, 10));
 
 // ---------------------------------------------------------------------------
 // Station
@@ -131,7 +131,7 @@ export async function findNearby(input) {
   return { place: r.place, stations, recommended: recommended.id };
 }
 
-async function resolveStation(g, input) {
+export async function resolveStation(g, input) {
   const text = String(input || "").trim();
   if (!text) throw new Error("Enter a station name, a place (e.g., Champaign, IL) or a GHCN-Daily ID.");
   const id = STATION_RE.test(text.toUpperCase()) ? text.toUpperCase() : (await findNearby(text)).recommended;
@@ -152,7 +152,7 @@ async function fetchText(url) {
   }
 }
 
-async function officialNormals(id) {
+export async function officialNormals(id) {
   const [daily, annual] = await Promise.all([fetchText(`${NORMALS_DAILY}${id}.csv`), fetchText(`${NORMALS_ANNUAL}${id}.csv`)]);
   if (!daily) return null;
   const rows = parseCsv(daily);
@@ -191,7 +191,7 @@ async function officialNormals(id) {
   return { days: out, frost };
 }
 
-async function computedNormals(g, U) {
+export async function computedNormals(g, U, table = "alm_daily") {
   const rows = await g.sql(`
     SELECT strftime(date, '%m-%d') AS md,
            avg(tmax) AS tmax, avg(tmin) AS tmin, avg(prcp) AS prcp, avg(snow) AS snow,
@@ -200,7 +200,7 @@ async function computedNormals(g, U) {
            count(DISTINCT year(date)) FILTER (WHERE tmax IS NOT NULL AND tmin IS NOT NULL) AS ny_t,
            count(DISTINCT year(date)) FILTER (WHERE prcp IS NOT NULL) AS ny_p,
            count(DISTINCT year(date)) FILTER (WHERE snow IS NOT NULL) AS ny_s
-    FROM alm_daily WHERE year(date) BETWEEN 1991 AND 2020 GROUP BY 1`);
+    FROM ${table} WHERE year(date) BETWEEN 1991 AND 2020 GROUP BY 1`);
   const byMd = new Map(rows.map((r) => [r.md, r]));
   const raw = MONTH_DAYS.map((m) => byMd.get(m) || { md: m });
   const median = (k) => {

@@ -34,7 +34,8 @@ browser ──PKCE──► Lumen ──► model (tool calling)
 | `lumen-oauth.js` | Copied unchanged from `ncsa/lumen` `scripts/web-oauth` (Apache-2.0, see `NOTICE`) |
 | `scripts/build_station_index.py` | Builds `station_index.parquet` (about 4 MB: NOAA's station and inventory files plus each US station's county) and `places.parquet` (about 4 MB: GeoNames places of 1,000+ people, loaded only when a question names a place) |
 | `.github/workflows/pages.yml` | Rebuilds the index daily and deploys to GitHub Pages |
-| `almanac.js` | The Climate at a glance tab |
+| `almanac.js` | The Daily almanac tab |
+| `annual.js` | The Annual climate tab |
 | `notify.js`, `scripts/send_almanac.py`, `.github/workflows/notify.yml` | The daily almanac email, shelved (see below) |
 | `test/` | Headless-Chrome end-to-end tests (`run_browser_test.py` for chat, `run_almanac_test.py` for the almanac) with a scripted mock Lumen |
 
@@ -124,7 +125,7 @@ requests). Those values are converted to GHCN units, listed in table
 Values are scaled to mm and °C, and rows with a NOAA quality flag are dropped
 (the count is reported to the model).
 
-## Climate at a glance
+## Daily almanac
 
 The second tab is an almanac for one station. Enter a GHCN-Daily ID, or a place:
 a place lists the nearest stations with their periods of record and starts on
@@ -156,6 +157,29 @@ has them, otherwise computed from the station's own 1991–2020 data (smoothed).
 Everything numeric is computed in the page; the model writes only the text in
 the boxes, from a summary of those numbers. Signed out, the boxes get plain
 templated text.
+
+## Annual climate
+
+The third tab shows a year of daily data for one station, with three sections:
+temperature, precipitation and snowfall. Enter a station ID or a place, as on the
+almanac, or link with `?annual=USC00118740&year=2012`.
+
+- **Temperature**: each day's high-to-low bar for the chosen year (red when the
+  day averaged warmer than normal, blue when colder) over the normal range and
+  the station's record range, with triangles on days that set a record. Hover
+  over a day for the observed, normal, all-years mean and record values.
+- **Precipitation**: the running total since January 1 against the normal and
+  the range from the driest to the wettest complete year so far, plus daily bars.
+- **Snowfall**: the same for a July-to-June snow season.
+
+Each section has a year (or season) menu, including the current year so far,
+and a table of that year against the 1991–2020 average, its rank among
+complete years (for a partial year, the same dates in every year) and the
+station's records. Below it, a chart of every year on record (click one to show
+it), and a summary of the station's climate: the Köppen class, computed from the
+station's 1991–2020 monthly means (after Peel et al. 2007 and Beck et al. 2018),
+notable extremes and how the chosen year compares. As on the almanac, the
+numbers are computed in the page and the model only writes the summaries.
 
 ## Daily email (shelved)
 
@@ -217,7 +241,8 @@ color scale so they read on the gray basemap.
 ```bash
 pip install playwright duckdb && python -m playwright install chromium
 python test/run_browser_test.py            # or --chrome /path/to/chrome
-python test/run_almanac_test.py            # Climate at a glance
+python test/run_almanac_test.py            # Daily almanac
+python test/run_annual_test.py             # Annual climate
 ```
 
 The test serves a copy of the site pointed at `test/mock_lumen.py`, a scripted
