@@ -947,7 +947,7 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
         el("span", { className: "alm-st-name", textContent: `${st.name}${st.state ? `, ${st.state}` : ""}` }),
         el("span", { className: "alm-st-meta", textContent: `${st.id}, ${dist(st.distance_km)} away` }),
         el("span", { className: "alm-st-cov", textContent: cov }),
-        isSel ? el("span", { className: "alm-st-sel", textContent: st.id === near.recommended ? "Selected: the nearest long, current record" : "Selected" }) : st.id === near.recommended ? el("span", { className: "alm-st-meta", textContent: "Recommended: the nearest long, current record" }) : null);
+        isSel ? el("span", { className: "alm-st-sel", textContent: st.id === near.recommended ? (near.named ? "Selected: the station you named" : "Selected: the nearest long, current record") : "Selected" }) : st.id === near.recommended ? el("span", { className: "alm-st-meta", textContent: near.named ? "The station you named" : "Recommended: the nearest long, current record" }) : null);
       if (isSel) btn.setAttribute("aria-current", "true");
       btn.addEventListener("click", () => {
         if (busy() || st.id === selected) return;
@@ -967,7 +967,7 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
   draw();
   const placeName = near.place ? `${near.place.name}, ${near.place.country === "US" ? near.place.admin1 : near.place.country}` : "here";
   box.replaceChildren(el("h2", { id: `${box.id}-h`, textContent: `Stations near ${placeName}` }),
-    el("p", { className: "fine", textContent: `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }), list, more);
+    el("p", { className: "fine", textContent: near.named ? `${what} shows the station you named. Pick another to switch.` : `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }), list, more);
   box.hidden = false;
 }
 

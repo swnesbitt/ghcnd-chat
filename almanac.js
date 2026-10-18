@@ -115,20 +115,52 @@ const parseCoverage = (text) => Object.fromEntries((text || "").split(", ").filt
 // Stations near a place, closest first, with periods of record, and the one the
 // almanac should use: the nearest with a long, current temperature and
 // precipitation record.
+// The input can be a place ("Champaign, IL") or words from a station's name
+// ("Willard airport, IL"): a place is tried first unless the words look like
+// a station name (airport, AP, a direction like "3S"), and the other is tried
+// when the first finds nothing. A named station is the one recommended.
+const STATION_WORDS = /\b(airport|arpt|ap|intl|international|rgnl|regional|muni|wso|wfo|coop|station|ranger|exp|univ|university|dam|\d+(\.\d+)?\s*[nsew]{1,3})\b/i;
 export async function findNearby(input) {
   const g = await deps.startData();
   const text = String(input || "").trim();
   const thisYear = new Date().getFullYear();
-  let r = null;
-  for (const radius of [60, 150, 300]) {
-    r = await g.findStations({ place: text, radius_km: radius, limit: 50 });
-    if ((r.stations || []).length >= 5) break;
+  const around = async (args) => {
+    let r = null;
+    for (const radius of [60, 150, 300]) {
+      r = await g.findStations({ ...args, radius_km: radius, limit: 50 });
+      if ((r.stations || []).length >= 5) break;
+    }
+    return r;
+  };
+  const byName = async () => {
+    const hits = await g.searchStationNames(text);
+    if (!hits.length) return null;
+    const hit = hits[0];
+    const r = await around({ lat: hit.lat, lon: hit.lon });
+    const title = hit.name.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\b(Ap|Wso|Wfo|Nws|\d+[nsew]{1,3})\b/g, (w) => w.toUpperCase());
+    return { r, place: { name: title, admin1: hit.state, country: hit.country }, recommended: hit.id };
+  };
+  let found = null;
+  let placeErr = null;
+  if (STATION_WORDS.test(text)) found = await byName();
+  if (!found) {
+    try {
+      const r = await around({ place: text });
+      found = { r, place: r.place };
+    } catch (err) {
+      placeErr = err;
+    }
   }
-  const stations = (r.stations || []).map((st) => ({ ...st, cov: parseCoverage(st.coverage) }));
+  if (!found) found = await byName();
+  if (!found) {
+    throw new Error(placeErr ? `No place or station named "${text}". Try a nearby town ("Champaign, IL"), words from a station's name ("Willard airport, IL"), or a GHCN-Daily ID.` : `No GHCN-Daily stations near ${text}.`);
+  }
+  const stations = (found.r.stations || []).map((st) => ({ ...st, cov: parseCoverage(st.coverage) }));
   if (!stations.length) throw new Error(`No GHCN-Daily stations within 300 km of ${text}.`);
   const isGood = (st) => st.cov.TMAX?.last >= thisYear - 1 && st.cov.PRCP?.last >= thisYear - 1 && st.cov.TMAX.first <= 1995;
-  const recommended = stations.find(isGood) || stations.find((st) => st.cov.TMAX?.last >= thisYear - 1) || stations[0];
-  return { place: r.place, stations, recommended: recommended.id };
+  const recommended = found.recommended && stations.some((st) => st.id === found.recommended) ? found.recommended
+    : (stations.find(isGood) || stations.find((st) => st.cov.TMAX?.last >= thisYear - 1) || stations[0]).id;
+  return { place: found.place, stations, recommended, named: !!found.recommended };
 }
 
 export async function resolveStation(g, input) {

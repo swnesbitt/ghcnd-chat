@@ -278,12 +278,52 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
 
   // ---- Tools --------------------------------------------------------------
 
+  // Station names are terse and upper case ("CHAMPAIGN URBANA WILLARD AP"), so
+  // a typed name is matched word by word, with common spellings mapped to
+  // GHCN's abbreviations, in any order.
+  const NAME_SYNONYMS = {
+    AIRPORT: "AP", ARPT: "AP", AIRFIELD: "AP", AIRPT: "AP", INTERNATIONAL: "INTL", REGIONAL: "RGNL",
+    MUNICIPAL: "MUNI", COUNTY: "CO", MOUNT: "MT", MOUNTAIN: "MTN", SAINT: "ST", FORT: "FT", LAKE: "LK",
+    NUMBER: "NO", UNIVERSITY: "UNIV", EXPERIMENT: "EXP", AGRICULTURAL: "AG", STATION: null, WEATHER: null,
+    THE: null, OF: null, AND: null, AT: null, CITY: null,
+  };
+  function nameTokens(text) {
+    return String(text).toUpperCase().replace(/['’`.]/g, "").replace(/[^A-Z0-9 ]+/g, " ").split(/\s+/).filter(Boolean)
+      .map((t) => (t in NAME_SYNONYMS ? NAME_SYNONYMS[t] : t)).filter(Boolean);
+  }
+  const nameClause = (tokens) => tokens.map((t) => `regexp_matches(s.name, ${sqlString(`(^|[^A-Z0-9])${t}`)})`).join(" AND ");
+
+  // Stations whose names match typed words, e.g. "Willard airport, IL"; an
+  // optional ", XX" narrows to a US state or a GHCN-Daily country code.
+  async function searchStationNames(text, { limit = 10 } = {}) {
+    const parts = String(text || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const region = parts.length > 1 && /^[A-Za-z]{2}$/.test(parts[parts.length - 1]) ? parts.pop().toUpperCase() : null;
+    const tokens = nameTokens(parts.join(" "));
+    if (!tokens.length) return [];
+    const thisYear = new Date().getUTCFullYear();
+    const run = (toks) => q(`
+      WITH m AS (
+        SELECT s.id, s.name, s.state, s.country, s.lat, s.lon FROM stations s
+        WHERE ${nameClause(toks)} ${region ? `AND (s.state = ${sqlString(region)} OR s.country = ${sqlString(region)})` : ""}),
+      c AS (SELECT id, max(last_year) AS last_y, max(last_year - first_year) AS span FROM coverage
+            WHERE element IN ('TMAX', 'PRCP') AND id IN (SELECT id FROM m) GROUP BY id)
+      SELECT m.*, c.last_y, c.span FROM m LEFT JOIN c USING (id)
+      ORDER BY (c.last_y >= ${thisYear - 1}) DESC NULLS LAST, c.span DESC NULLS LAST LIMIT ${Math.min(50, limit)}`).then(toRows);
+    let rows = await run(tokens);
+    // "Willard airport" where the station is just "WILLARD": drop the generic words.
+    const specific = tokens.filter((t) => !["AP", "INTL", "RGNL", "MUNI", "CO"].includes(t));
+    if (!rows.length && specific.length && specific.length < tokens.length) rows = await run(specific);
+    return rows;
+  }
+
   async function findStations({ query, element, min_years, limit = 10, ...areaArgs } = {}) {
     const area = await resolveArea(areaArgs);
     const where = [...area.where];
     if (query) {
       const term = String(query).trim().toUpperCase();
-      where.push(STATION_RE.test(term) ? `s.id = ${sqlString(term)}` : `s.name ILIKE ${sqlString("%" + term + "%")}`);
+      const toks = nameTokens(term);
+      where.push(STATION_RE.test(term) ? `s.id = ${sqlString(term)}`
+        : toks.length ? `(s.name ILIKE ${sqlString("%" + term + "%")} OR (${nameClause(toks)}))` : `s.name ILIKE ${sqlString("%" + term + "%")}`);
     }
     if (element) {
       const el = String(element).toUpperCase();
@@ -988,6 +1028,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   return {
     db,
     findStations,
+    searchStationNames,
     fillNeighbors,
     loadSeries,
     loadArea,

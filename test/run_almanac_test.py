@@ -174,6 +174,27 @@ def main() -> int:
             print("switched to:", p2.text_content("#alm-out")[:160])
             check(other_name.split(",")[0] in (p2.text_content("#alm-out") or ""), "picking another station renders its almanac")
             p2.screenshot(path=str(out / "almanac-place.png"), full_page=False)
+
+            # Words from a station's name, not a place.
+            for _ in range(300):
+                if p2.evaluate("() => !document.querySelector('#alm-form button').disabled"):
+                    break
+                p2.wait_for_timeout(500)
+            for query, want in [("Willard airport, IL", "WILLARD AP"), ("O'Hare airport", "OHARE")]:
+                p2.fill("#alm-input", query)
+                p2.evaluate("() => { document.querySelector('#alm-choices').hidden = true; }")
+                p2.click("#alm-form button[type=submit]")
+                for _ in range(120):
+                    if p2.evaluate("() => !document.querySelector('#alm-choices').hidden || !!document.querySelector('#alm-out .error-text')"):
+                        break
+                    p2.wait_for_timeout(500)
+                sel = p2.text_content("#alm-choices [aria-current=true] .alm-st-name") if p2.locator("#alm-choices [aria-current=true]").count() else ""
+                print(f"{query!r} ->", sel)
+                check(want in sel, f'"{query}" finds the station by name')
+                for _ in range(300):
+                    if p2.evaluate("() => !document.querySelector('#alm-form button').disabled"):
+                        break
+                    p2.wait_for_timeout(500)
             ctx2.close()
             browser.close()
     finally:
