@@ -938,18 +938,28 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
   const retired = (st) => lastYear(st) < thisYear - 1;
   // "Hide stations no longer reporting", remembered in this browser (on by default).
   const hideBox = el("input", { type: "checkbox", checked: store.get("hide-retired-stations") !== "0" });
+  // "Only stations with 30+ years of data" (temperature or precipitation) that
+  // are still reporting, off by default.
+  const years = (st) => Math.max(0, ...["TMAX", "PRCP"].map((e) => (st.cov[e] ? st.cov[e].last - st.cov[e].first + 1 : 0)));
+  const longBox = el("input", { type: "checkbox", checked: store.get("long-record-stations") === "1" });
   let ordered = [];
   let shown = 4;
   const list = el("ol", { className: "alm-stations" });
   const more = el("button", { type: "button", className: "quiet", textContent: "More stations" });
   const count = el("span", { className: "fine" });
   const filter = () => {
-    ordered = hideBox.checked ? all.filter((st) => !retired(st) || st.id === selected || st.id === near.recommended) : all;
+    const keep = (st) => st.id === selected || st.id === near.recommended;
+    ordered = all.filter((st) => keep(st) || ((!hideBox.checked || !retired(st)) && (!longBox.checked || (years(st) >= 30 && !retired(st)))));
     const hidden = all.length - ordered.length;
-    count.textContent = hidden ? ` (${hidden} hidden)` : "";
+    count.textContent = hidden ? `${hidden} hidden` : "";
   };
   hideBox.addEventListener("change", () => {
     store.set("hide-retired-stations", hideBox.checked ? "1" : "0");
+    filter();
+    draw();
+  });
+  longBox.addEventListener("change", () => {
+    store.set("long-record-stations", longBox.checked ? "1" : "0");
     filter();
     draw();
   });
@@ -987,7 +997,10 @@ function renderChoices(near, selected, { box = $("alm-choices"), busy = () => al
   const placeName = near.place ? `${near.place.name}, ${near.place.country === "US" ? near.place.admin1 : near.place.country}` : "here";
   box.replaceChildren(el("h2", { id: `${box.id}-h`, textContent: `Stations near ${placeName}` }),
     el("p", { className: "fine", textContent: near.named ? `${what} shows the station you named. Pick another to switch.` : `${what} uses the nearest station with a long, current temperature and precipitation record. Pick another to switch.` }),
-    el("label", { className: "alm-hide" }, hideBox, " Hide stations no longer reporting", count), list, more);
+    el("div", { className: "alm-filters" },
+      el("label", { className: "alm-hide" }, hideBox, " Hide stations no longer reporting"),
+      el("label", { className: "alm-hide" }, longBox, " Only current stations with 30+ years of data"), count),
+    list, more);
   box.hidden = false;
 }
 

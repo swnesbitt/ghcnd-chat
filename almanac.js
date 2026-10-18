@@ -138,7 +138,7 @@ export async function findNearby(input) {
     const hit = hits[0];
     const r = await around({ lat: hit.lat, lon: hit.lon });
     const title = hit.name.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\b(Ap|Wso|Wfo|Nws|\d+[nsew]{1,3})\b/g, (w) => w.toUpperCase());
-    return { r, place: { name: title, admin1: hit.state, country: hit.country }, recommended: hit.id };
+    return { r, place: { name: title, admin1: hit.state, country: hit.country, lat: hit.lat, lon: hit.lon }, recommended: hit.id };
   };
   let found = null;
   let placeErr = null;
@@ -155,7 +155,20 @@ export async function findNearby(input) {
   if (!found) {
     throw new Error(placeErr ? `No place or station named "${text}". Try a nearby town ("Champaign, IL"), words from a station's name ("Willard airport, IL"), or a GHCN-Daily ID.` : `No GHCN-Daily stations near ${text}.`);
   }
-  const stations = (found.r.stations || []).map((st) => ({ ...st, cov: parseCoverage(st.coverage) }));
+  // Long, current records within 150 km too, so the "30+ years" filter in the
+  // station list has something to show where the closest stations are all short.
+  const center = found.place && Number.isFinite(found.place.lat) ? { lat: found.place.lat, lon: found.place.lon } : null;
+  let extra = [];
+  if (center) {
+    const more = await Promise.all(["TMAX", "PRCP"].map((element) =>
+      g.findStations({ ...center, radius_km: 150, element, min_years: 30, limit: 50 }).catch(() => ({ stations: [] }))));
+    extra = more.flatMap((m) => m.stations || []);
+  }
+  const seen = new Set();
+  const stations = [...(found.r.stations || []), ...extra]
+    .filter((st) => !seen.has(st.id) && seen.add(st.id))
+    .sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0))
+    .map((st) => ({ ...st, cov: parseCoverage(st.coverage) }));
   if (!stations.length) throw new Error(`No GHCN-Daily stations within 300 km of ${text}.`);
   const isGood = (st) => st.cov.TMAX?.last >= thisYear - 1 && st.cov.PRCP?.last >= thisYear - 1 && st.cov.TMAX.first <= 1995;
   const recommended = found.recommended && stations.some((st) => st.id === found.recommended) ? found.recommended

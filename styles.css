@@ -384,7 +384,9 @@ a:hover { color: var(--accent); }
 .alm-station:hover { border-left-color: var(--ink); }
 .alm-station[aria-current="true"] { border-left-color: var(--loaded); background: var(--code-bg); }
 .alm-st-name { font-weight: 700; }
-.alm-hide { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 0 0.6rem; font-size: 0.9375rem; }
+.alm-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 1.25rem; margin: 0 0 0.6rem; }
+.alm-filters .fine { font-size: 0.875rem; }
+.alm-hide { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.9375rem; }
 .alm-hide input { width: 1.05rem; height: 1.05rem; accent-color: var(--ink); }
 .alm-st-meta, .alm-st-cov { font-size: 0.875rem; color: var(--ink-soft); }
 .alm-st-sel { font-size: 0.8125rem; font-weight: 700; color: var(--accent); }
