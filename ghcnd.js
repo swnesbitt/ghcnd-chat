@@ -201,6 +201,14 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     await ensurePlaces();
     let [name, region] = String(place).split(",").map((x) => x.trim());
     region = (region || state || "").toUpperCase();
+    if (US_STATES[region]) region = US_STATES[region];
+    // Twin-city names ("Champaign-Urbana", "Minneapolis/St. Paul") are not in the
+    // gazetteer: fall back to the first city.
+    const twin = name.split(/\s*[-/–]\s*|\s+and\s+/i);
+    if (twin.length > 1) {
+      const whole = toRows(await q(`SELECT 1 FROM places WHERE lower(name) = lower(${sqlString(name)}) LIMIT 1`));
+      if (!whole.length) name = twin[0];
+    }
     const iso = String(country || "").toUpperCase();
     const where = [`(lower(name) = lower(${sqlString(name)}) OR lower(asciiname) = lower(${sqlString(name)}))`];
     if (region.length === 2) where.push(`((country = 'US' AND admin1 = ${sqlString(region)}) OR country = ${sqlString(region)})`);
@@ -219,6 +227,16 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     }
     return rows[0];
   }
+
+  const US_STATES = Object.fromEntries(Object.entries({
+    AL: "ALABAMA", AK: "ALASKA", AZ: "ARIZONA", AR: "ARKANSAS", CA: "CALIFORNIA", CO: "COLORADO", CT: "CONNECTICUT", DE: "DELAWARE",
+    FL: "FLORIDA", GA: "GEORGIA", HI: "HAWAII", ID: "IDAHO", IL: "ILLINOIS", IN: "INDIANA", IA: "IOWA", KS: "KANSAS", KY: "KENTUCKY",
+    LA: "LOUISIANA", ME: "MAINE", MD: "MARYLAND", MA: "MASSACHUSETTS", MI: "MICHIGAN", MN: "MINNESOTA", MS: "MISSISSIPPI", MO: "MISSOURI",
+    MT: "MONTANA", NE: "NEBRASKA", NV: "NEVADA", NH: "NEW HAMPSHIRE", NJ: "NEW JERSEY", NM: "NEW MEXICO", NY: "NEW YORK",
+    NC: "NORTH CAROLINA", ND: "NORTH DAKOTA", OH: "OHIO", OK: "OKLAHOMA", OR: "OREGON", PA: "PENNSYLVANIA", RI: "RHODE ISLAND",
+    SC: "SOUTH CAROLINA", SD: "SOUTH DAKOTA", TN: "TENNESSEE", TX: "TEXAS", UT: "UTAH", VT: "VERMONT", VA: "VIRGINIA", WA: "WASHINGTON",
+    WV: "WEST VIRGINIA", WI: "WISCONSIN", WY: "WYOMING", DC: "DISTRICT OF COLUMBIA", PR: "PUERTO RICO",
+  }).map(([k, v]) => [v, k]));
 
   async function resolveArea({ state, country, county, place, lat, lon, radius_km, stations: ids } = {}) {
     const where = [];
@@ -350,10 +368,28 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
                (SELECT max(c.last_year - c.first_year) FROM coverage c
                  WHERE c.id = s.id AND c.element = ${sortEl}) DESC NULLS LAST
       LIMIT ${n}`));
+    // The long-term climate station for a place: among current stations with
+    // 30+ years within 30 km (or all matches, without a point), the best score
+    // of record length, less 1.5 years per km of distance, plus 40 for a station
+    // named for the town (so Champaign gets CHAMPAIGN 3S, not PHILO 14 km away,
+    // and Peoria its airport, not MACKINAW 24 km away). Usually what "the
+    // climate of <town>" means.
+    const thisYear = new Date().getUTCFullYear();
+    const townToks = area.place?.name ? nameTokens(area.place.name) : [];
+    const townMatch = townToks.length ? `(${nameClause(townToks)})` : "false";
+    const longTerm = toRows(await q(`
+      WITH s AS (${base}),
+      c AS (SELECT id, min(first_year) AS first_year, max(last_year) AS last_year, max(last_year - first_year + 1) AS years
+            FROM coverage WHERE element IN ('TMAX', 'PRCP') AND id IN (SELECT id FROM s) GROUP BY id)
+      SELECT s.id, s.name, s.state, round(s.distance_km, 1) AS distance_km, c.first_year, c.last_year, c.years
+      FROM s JOIN c USING (id)
+      WHERE c.last_year >= ${thisYear - 1} AND c.years >= 30 ${area.point ? "AND s.distance_km <= 30" : ""}
+      ORDER BY c.years - 1.5 * coalesce(s.distance_km, 0) + CASE WHEN ${townMatch} THEN 40 ELSE 0 END DESC, s.id LIMIT 1`))[0];
     return {
       area: area.label || undefined,
       place: area.place || undefined,
       total_matching: total,
+      long_term_station: longTerm ? { ...longTerm, note: "The current station with the longest record here: use it for questions about this place's climate, records or trends unless the user names another." } : undefined,
       stations: rows,
       note: !rows.length ? "No stations matched."
         : total > rows.length ? `Showing ${rows.length} of ${total}. To analyze all of them on a day or period, use load_area with the same area.` : undefined,
