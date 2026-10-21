@@ -296,6 +296,16 @@ a:hover { color: var(--accent); }
 
 /* ---- Tabs ---------------------------------------------------------------- */
 
+.site-note {
+  margin: 0;
+  padding: 0.5rem 1.25rem;
+  text-align: center;
+  font-size: 0.9375rem;
+  color: var(--ink);
+  background: var(--il-arches-95, #e9f6fb);
+  border-bottom: 1px solid var(--rule);
+}
+
 .tabs {
   display: flex;
   gap: 0.25rem;
@@ -496,7 +506,7 @@ fieldset.ntf-sub { min-width: 0; }
 /* ---- Print (and the PDF attached to the daily email) ------------------- */
 
 @media print {
-  ilw-header, ilw-footer, .tabs, #banner, #panel-chat, .alm-form, #alm-choices, #alm-status,
+  ilw-header, ilw-footer, .site-note, .tabs, #banner, #panel-chat, .alm-form, #alm-choices, #alm-status,
   .alm-actions, .copy-log, .vega-embed details, .vega-embed .vega-actions { display: none !important; }
   body { background: #fff; }
   .almanac { max-width: none; padding: 0; }
