@@ -152,7 +152,7 @@ def main() -> None:
                 FROM acc
             """)
         con.sql("DROP TABLE acc")
-        n = con.sql(f"SELECT count(*) FROM rec WHERE element = '{el}'").fetchone()[0]
+        n = con.sql(f"SELECT count(*) FROM rec WHERE element = '{el}'").fetchall()[0][0]
         print(f"{el}: {len(files)} files in {len(groups)} batches, {n} record rows, {time.time() - t0:.0f} s", flush=True)
 
     # Regions: state or province where NOAA gives one, otherwise the country.
@@ -171,14 +171,14 @@ def main() -> None:
                   ORDER BY r.element, r.id, r.month, r.stat)
             TO '{path}' (FORMAT parquet, COMPRESSION zstd)
         """)
-        stations = con.sql(f"SELECT count(DISTINCT id) FROM '{path}'").fetchone()[0]
+        stations = con.sql(f"SELECT count(DISTINCT id) FROM '{path}'").fetchall()[0][0]
         if stations:
             meta_regions[region] = {"stations": stations, "bytes": path.stat().st_size}
         else:
             path.unlink()
 
-    through = con.sql("SELECT max(date) FROM rec").fetchone()[0]
-    total = con.sql("SELECT count(*) FROM rec").fetchone()[0]
+    through = con.sql("SELECT max(date) FROM rec").fetchall()[0][0]
+    total = con.sql("SELECT count(*) FROM rec").fetchall()[0][0]
     meta = {
         "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "data_through": str(through),

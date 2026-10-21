@@ -37,7 +37,7 @@ jobs:
 
       - name: Build station index and place list
         run: |
-          pip install duckdb
+          pip install "duckdb==1.5.6"   # pinned: 2.0 changed the Python API; test before moving up
           python scripts/build_station_index.py .
 
       - name: Fetch the latest records (built monthly by records.yml)

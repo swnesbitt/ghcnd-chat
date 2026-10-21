@@ -87,7 +87,7 @@ def main(out_dir: Path) -> None:
     """)
     n_st, n_rows, n_cty = con.sql(
         f"SELECT count(DISTINCT id), count(*), count(DISTINCT id) FILTER (WHERE county IS NOT NULL) FROM '{station_out}'"
-    ).fetchone()
+    ).fetchall()[0]
     print(f"wrote {station_out}: {n_st} stations ({n_cty} with a US county), {n_rows} station-element rows")
     if n_st < 100_000 or n_cty < 30_000:
         sys.exit("station or county counts are implausibly low; refusing to publish")
@@ -108,7 +108,7 @@ def main(out_dir: Path) -> None:
             ORDER BY asciiname
         ) TO '{places_out}' (FORMAT parquet, COMPRESSION zstd)
     """)
-    n_pl = con.sql(f"SELECT count(*) FROM '{places_out}'").fetchone()[0]
+    n_pl = con.sql(f"SELECT count(*) FROM '{places_out}'").fetchall()[0][0]
     print(f"wrote {places_out}: {n_pl} places")
     if n_pl < 100_000:
         sys.exit("place count is implausibly low; refusing to publish")
