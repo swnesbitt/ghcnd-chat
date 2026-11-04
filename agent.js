@@ -246,7 +246,7 @@ export const TOOL_SCHEMAS = [
 // fields to replies that they reject when sent back.
 function cleanAssistant(msg) {
   const out = { role: "assistant", content: msg.content ?? "" };
-  if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
+  if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls.map((c) => ({ ...c, function: { ...c.function } }));
   return out;
 }
 
@@ -268,6 +268,7 @@ function clip(text, max = 16000) {
 // Streamed replies show the answer as it is written (a long table can take
 // the model most of a minute). Servers that refuse stream get plain requests.
 let streamOff = false;
+let garbled = 0; // streamed replies that had to be asked again; two turn streaming off
 
 // Read a chat completion, streamed (server-sent events) or not. Text is passed
 // to onText as it arrives, until the reply turns out to be tool calls.
@@ -300,7 +301,12 @@ async function readCompletion(resp, onText) {
       const k = Number.isInteger(tc.index) ? tc.index : calls.length;
       calls[k] ||= { id: "", type: "function", function: { name: "", arguments: "" } };
       if (tc.id) calls[k].id = tc.id;
-      if (tc.function?.name) calls[k].function.name += tc.function.name;
+      // A name arrives with a call's first piece. Lumen also repeats the whole
+      // call (name and all its arguments) in a later piece: start it over.
+      if (tc.function?.name) {
+        if (calls[k].function.name) calls[k].function.arguments = "";
+        calls[k].function.name = tc.function.name;
+      }
       if (tc.function?.arguments) calls[k].function.arguments += tc.function.arguments;
     }
     if (d.content) {
@@ -322,8 +328,20 @@ async function readCompletion(resp, onText) {
   if (!any) return null;
   const tc = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
   if (tc.length) msg.tool_calls = tc;
+  msg.streamed = true;
   return msg;
 }
+
+const parses = (text) => {
+  try {
+    JSON.parse(text || "{}");
+    return true;
+  } catch {
+    return false;
+  }
+};
+// A streamed tool call is usable if it names a tool and its arguments parse.
+const goodCalls = (msg) => (msg.tool_calls || []).every((c) => TOOL_SCHEMAS.some((t) => t.function.name === c.function?.name) && parses(c.function?.arguments));
 
 function looksLikeToolCall(text) {
   const t = String(text || "").trim();
@@ -364,13 +382,20 @@ export async function runTurn({ lumen, model, messages, handlers, onStep = () =>
     let msg = await readCompletion(resp, (text) => onStep({ type: "text", text }));
     // Some servers' streaming leaves a tool call as plain text: if a streamed
     // reply looks like one, ask again without streaming (and stop streaming).
-    if (!streamOff && msg && !msg.tool_calls?.length && looksLikeToolCall(msg.content)) {
-      streamOff = true;
+    // Likewise if a streamed tool call came out garbled (an unknown name, or
+    // arguments that are not JSON).
+    if (msg?.streamed && (msg.tool_calls?.length ? !goodCalls(msg) : looksLikeToolCall(msg.content))) {
+      streamOff = ++garbled >= 2;
       onStep({ type: "thinking" });
       msg = await readCompletion(await request(false), () => {});
     }
     if (!msg) throw new Error("The model returned no message.");
-    messages.push(cleanAssistant(msg));
+    delete msg.streamed;
+    // Never send the server a tool call whose arguments it cannot parse (it
+    // rejects the whole conversation); the model is told below instead.
+    const history = cleanAssistant(msg);
+    for (const c of history.tool_calls || []) if (!parses(c.function?.arguments)) c.function = { ...c.function, arguments: "{}" };
+    messages.push(history);
     if (!msg.tool_calls?.length) return msg.content ?? "";
 
     for (const call of msg.tool_calls) {

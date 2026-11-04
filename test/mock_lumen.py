@@ -155,6 +155,14 @@ class Handler(BaseHTTPRequestHandler):
         with open(LOG, "a") as f:
             f.write(json.dumps(body) + "\n")
         msgs = body["messages"]
+        # Like Lumen: a conversation holding a tool call whose arguments are not
+        # JSON is refused.
+        for m in msgs:
+            for tc in m.get("tool_calls") or []:
+                try:
+                    json.loads(tc["function"].get("arguments") or "{}")
+                except ValueError:
+                    return self.reply(400, {"error": {"message": "Assistant tool call function.arguments must be valid JSON."}})
         last_user = max(i for i, m in enumerate(msgs) if m["role"] == "user")
         n_tools = sum(1 for m in msgs[last_user:] if m["role"] == "tool")
         if not body.get("tools"):
@@ -191,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
             a = tc["function"]["arguments"]
             send({"tool_calls": [{"index": 0, "id": tc["id"], "type": "function", "function": {"name": tc["function"]["name"], "arguments": a[: len(a) // 2]}}]})
             send({"tool_calls": [{"index": 0, "function": {"arguments": a[len(a) // 2:]}}]})
+            # Lumen repeats the whole call in a later piece.
+            send({"tool_calls": [{"index": 0, "id": tc["id"], "type": "function", "function": {"name": tc["function"]["name"], "arguments": a}}]})
         text = msg.get("content") or ""
         for i in range(0, len(text), 24):
             send({"content": text[i:i + 24]})
