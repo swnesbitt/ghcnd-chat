@@ -364,7 +364,7 @@ a:hover { color: var(--accent); }
 .alm-table thead th { font-weight: 700; font-size: 0.9375rem; }
 .alm-table tbody th { font-weight: 600; white-space: nowrap; }
 .alm-table td { white-space: nowrap; }
-.alm-now td { white-space: normal; min-width: 11rem; }
+.alm-now td { white-space: normal; min-width: 10rem; }
 .alm-val { font-size: 1.375rem; font-weight: 700; }
 .alm-sub { font-size: 0.875rem; color: var(--ink-soft); }
 .alm-flag { display: inline-block; margin-top: 0.2rem; padding: 0 0.4rem; font-size: 0.8125rem; font-weight: 700; color: #fff; background: var(--accent); }
@@ -420,6 +420,7 @@ a:hover { color: var(--accent); }
 /* ---- Small screens ------------------------------------------------------ */
 
 @media (max-width: 52rem) {
+  .alm-now td { min-width: 8rem; }
   .app { grid-template-columns: 1fr; gap: 1rem; padding: 1.25rem 1rem 2rem; }
   .rail {
     position: static;

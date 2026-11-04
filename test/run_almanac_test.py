@@ -74,7 +74,7 @@ def main() -> int:
             check(page.is_visible("#panel-almanac") and not page.is_visible("#panel-chat"), "deep link opens the almanac tab")
             heads = page.eval_on_selector_all(".alm-section h2", "h => h.map(x => x.textContent)")
             print("sections:", heads)
-            check(heads[:2] == ["Yesterday and today", "The past 5 days and the next 5"] and "The past year" in heads
+            check(heads[:2] in (["Yesterday, today and tomorrow", "The past 5 days and the next 5"], ["Yesterday and today", "The past 5 days and the next 5"]) and "The past year" in heads
                   and "First frost and freeze" in heads and "Degree days this year" in heads, "all five sections present")
             boxes = page.eval_on_selector_all(".alm-box", "b => b.map(x => x.textContent.trim())")
             check(len(boxes) == 5 and all("MOCK-NARRATIVE" in b for b in boxes), "every section has a blue box with the model's text")

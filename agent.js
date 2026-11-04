@@ -41,6 +41,7 @@ SQL is DuckDB, not SQLite:
 - For "today", use the literal date given at the end of these instructions (DATE 'YYYY-MM-DD'), not current_date: the database clock is UTC and can already be tomorrow.
 - The same calendar day in every year: WHERE month(date) = <month> AND day(date) = <day>, with today's numbers.
 - One statement per call, no trailing semicolon needed.
+- Table aliases must not be SQL keywords (as, at, on, to, in, by, end, all): JOIN area_stations a, not JOIN area_stations as.
 
 The records table (from load_records): one row per station, element, month and stat. month 1-12 is a calendar month and month 0 is all months; stat is 'max' (all elements) or 'min' (TMAX, TMIN, TAVG); value is in obs units; runner_up is the station's second-highest (or second-lowest) value for that month; n_years and n_days are how much data the station has for that month. Restrict to the area with JOIN area_stations USING (id). Records cover data through data_through; for anything after that, check the recent period with load_area.
 
