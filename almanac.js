@@ -421,7 +421,7 @@ function classify(pct, value, recHi, recLo, U, warmSide = true) {
 // Narrative: the model writes the blue boxes from the numbers; templates otherwise.
 
 const NARRATOR = `You write the short text boxes of a station climate almanac for a curious general audience. You get a JSON summary of numbers computed from NOAA data. Use only those numbers; never invent values, dates or records. Return only a JSON object with these string fields:
-- "now": 2-3 sentences on the latest observations and today's forecast against normal and the record for the date.
+- "now": 2-3 sentences on the latest observations and today's forecast (high, and tonight's low when given) against normal and the record for the date.
 - "outlook": 3-5 sentences on where the past 5 and next 5 days sit relative to the 1991-2020 normals and the historical record: normal or abnormal, and how (use the classes given). Then a sentence or two on anything interesting in the forecast text.
 - "past_year": 3-5 sentences summarizing the last 12 months' temperature, precipitation and snowfall against normal, ending with something creative: an almanac-style saying, a haiku or a vivid image grounded in these numbers.
 - "frost": 3-4 sentences on frost and freeze this season against the normal dates: what has happened so far, whether the forecast brings a frost or freeze (or could, where a forecast low is within the margin given), and how usual or unusual that timing is relative to 1991-2020 (use the percentages given); or "" if the input has no frost section.
@@ -665,6 +665,16 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     F.t(v), isNum(n) ? `normal ${F.t(n)}${isNum(dep) ? ` (${F.dep(dep)})` : ""}` : null,
     isNum(rec) ? `record ${F.t(rec)} in ${recYr}` : null,
     isNum(v) && isNum(rec) && (isHigh ? v > rec : v < rec) ? (observed ? "New record" : "Would set a record") : null);
+  // GHCN-Daily (and the NWS grid) date a low by the morning it ends, so this
+  // morning's low is already past and tonight's is tomorrow's: show tonight's
+  // forecast low, against tomorrow morning's normal and record.
+  const tonight = !historical && fc && !isNum(T.tmin) ? day(addDays(D, 1)) : null;
+  const tonightCell = () => {
+    if (!tonight || !isNum(tonight.tmin)) return tempCell(T.tmin, T.n_lo, T.dep_lo, T.rec_lo, T.rec_lo_yr, false, false);
+    const c = tempCell(tonight.tmin, tonight.n_lo, tonight.dep_lo, tonight.rec_lo, tonight.rec_lo_yr, false, false);
+    c.insertBefore(h("div", { className: "alm-sub", text: "tonight's low" }), c.children[1] || null);
+    return c;
+  };
   const nowRows = [];
   if (hasT) {
     nowRows.push(h("tr", {}, h("th", { scope: "row", text: "High" }),
@@ -672,19 +682,19 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       tempCell(T.tmax, T.n_hi, T.dep_hi, T.rec_hi, T.rec_hi_yr, true, false)));
     nowRows.push(h("tr", {}, h("th", { scope: "row", text: "Low" }),
       L ? tempCell(L.tmin, L.n_lo, L.dep_lo, L.rec_lo, L.rec_lo_yr, false, true) : cell("–"),
-      tempCell(T.tmin, T.n_lo, T.dep_lo, T.rec_lo, T.rec_lo_yr, false, false)));
+      tonightCell()));
   }
   if (hasP) {
     nowRows.push(h("tr", {}, h("th", { scope: "row", text: "Precipitation" }),
       L ? cell(F.p(L.prcp), isNum(L.pct_wet) ? `rain or snow falls on ${Math.round(L.pct_wet * 100)}% of these dates` : null,
-        isNum(L.rec_prcp) ? `record ${F.p(L.rec_prcp)} in ${L.rec_prcp_yr}` : null) : cell("–"),
+        isNum(L.rec_prcp) ? `record ${F.p(L.rec_prcp)} (${L.rec_prcp_yr})` : null) : cell("–"),
       cell(isNum(T.prcp) ? F.p(T.prcp) : "–", isNum(T.pop) ? `${Math.round(T.pop)}% chance${fcBy.get(`${D}|PRCP`)?.partial ? ", rest of today" : ""}` : null,
-        isNum(T.rec_prcp) ? `record ${F.p(T.rec_prcp)} in ${T.rec_prcp_yr}` : null)));
+        isNum(T.rec_prcp) ? `record ${F.p(T.rec_prcp)} (${T.rec_prcp_yr})` : null)));
   }
   if (hasSnow && (isNum(L?.snow) && L.snow > 0 || isNum(T.snow) && T.snow > 0 || month >= 10 || month <= 4)) {
     nowRows.push(h("tr", {}, h("th", { scope: "row", text: "Snowfall" }),
-      L ? cell(F.s(L.snow), null, isNum(L.rec_snow) && L.rec_snow > 0 ? `record ${F.s(L.rec_snow)} in ${L.rec_snow_yr}` : null) : cell("–"),
-      cell(isNum(T.snow) ? F.s(T.snow) : "–", null, isNum(T.rec_snow) && T.rec_snow > 0 ? `record ${F.s(T.rec_snow)} in ${T.rec_snow_yr}` : null)));
+      L ? cell(F.s(L.snow), null, isNum(L.rec_snow) && L.rec_snow > 0 ? `record ${F.s(L.rec_snow)} (${L.rec_snow_yr})` : null) : cell("–"),
+      cell(isNum(T.snow) ? F.s(T.snow) : "–", null, isNum(T.rec_snow) && T.rec_snow > 0 ? `record ${F.s(T.rec_snow)} (${T.rec_snow_yr})` : null)));
   }
   section("now", "Yesterday and today",
     h("div", { className: "alm-scroll" }, h("table", { className: "alm-table alm-now" },
@@ -705,7 +715,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     record_precip: round(r.rec_prcp, U.pd), record_precip_year: r.rec_prcp_yr, years_of_record: r.n_years,
   };
   facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate),
-    latest_from_nearby_station: subDay(Ldate) ? `${subDay(Ldate).source_name}, ${Math.round(subDay(Ldate).distance_km)} km away (this station had not reported)` : null, latest_label: latestLabel, today_forecast: fc ? pick(T) : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
+    latest_from_nearby_station: subDay(Ldate) ? `${subDay(Ldate).source_name}, ${Math.round(subDay(Ldate).distance_km)} km away (this station had not reported)` : null, latest_label: latestLabel, today_forecast: fc ? { ...pick(T), tonight_low: tonight && isNum(tonight.tmin) ? { low: round(tonight.tmin), normal_low: round(tonight.n_lo), low_vs_normal: round(tonight.dep_lo), record_low: round(tonight.rec_lo), record_low_year: tonight.rec_lo_yr, class: tonight.class_lo } : null } : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
 
   // ---- 2. Past 5 and next 5 days
   const win = winDates.map(day);
@@ -1229,6 +1239,8 @@ function templateText(f, U, F) {
     if (t && isNum(t.high)) {
       parts.push(`Today's forecast high of ${F.t(t.high)} is ${t.high_class ? `${t.high_class}, against` : "compared with"} a normal of ${F.t(t.normal_high)}${isNum(t.record_high) ? `; the record for the date is ${F.t(t.record_high)} from ${t.record_high_year}` : ""}.`);
     }
+    const tl = t?.tonight_low;
+    if (tl && isNum(tl.low)) parts.push(`Tonight's forecast low is ${F.t(tl.low)}, against a normal of ${F.t(tl.normal_low)}.`);
     out.now = parts.join(" ");
   }
   const o = f.outlook;
