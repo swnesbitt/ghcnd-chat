@@ -314,6 +314,8 @@ function windowChart(rows, today, U, xDomain) {
       layer("datum.kind === 'normal'", { type: "line", strokeWidth: 1.5 }),
       layer("datum.kind === 'observed'", { type: "line", strokeWidth: 2.5, point: { filled: true, size: 45 } }),
       layer("datum.kind === 'forecast'", { type: "line", strokeWidth: 2.5, point: { filled: false, size: 50, strokeWidth: 1.5, fill: "white" } }, { strokeDash: { value: [5, 3] } }),
+      // A thin dotted bridge from the last report to the first forecast, across days not yet reported.
+      layer("datum.kind === 'bridge'", { type: "line", strokeWidth: 1.5, opacity: 0.6 }, { strokeDash: { value: [2, 3] } }),
       {
         data: { values: [{ date: today, label: "Today" }] },
         layer: [
@@ -729,6 +731,15 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
       if (isNum(r.n_lo)) chartRows.push({ date: r.date, series: "Normal low", value: r.n_lo, kind: "normal" });
       if (isNum(r.rec_hi)) chartRows.push({ date: r.date, series: "Record high", value: r.rec_hi, kind: "record" });
       if (isNum(r.rec_lo)) chartRows.push({ date: r.date, series: "Record low", value: r.rec_lo, kind: "record" });
+    }
+    for (const [series, key] of [["High", "tmax"], ["Low", "tmin"]]) {
+      const obs = win.filter((r) => r.kind !== "forecast" && isNum(r[key]));
+      const fcs = win.filter((r) => r.kind === "forecast" && isNum(r[key]));
+      const a = obs[obs.length - 1];
+      const b = fcs[0];
+      if (a && b && a.date < b.date) {
+        chartRows.push({ date: a.date, series, value: a[key], kind: "bridge" }, { date: b.date, series, value: b[key], kind: "bridge" });
+      }
     }
     const prRows = win.filter((r) => isNum(r.prcp)).map((r) => ({ date: r.date, value: r.prcp, kind: r.kind === "observed" ? "Observed" : "Forecast" }));
     const tr = win.map((r) => h("tr", { className: r.kind === "forecast" ? "alm-fc" : "" },
