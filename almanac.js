@@ -568,9 +568,12 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   const valueRows = evalDates.map((d) => {
     const observed = historical ? true : d < D;
     const o = obsBy.get(d) || {};
+    // Today's low happened overnight: once the station has reported it (a
+    // morning observer's report is dated today), it is observed, not forecast.
+    const morningLow = !observed && d === D && isNum(o.tmin);
     return {
-      date: d, kind: observed ? "observed" : "forecast",
-      tmax: observed ? o.tmax ?? null : fcv(d, "TMAX"), tmin: observed ? o.tmin ?? null : fcv(d, "TMIN"),
+      date: d, kind: observed ? "observed" : "forecast", tmin_obs: morningLow,
+      tmax: observed ? o.tmax ?? null : fcv(d, "TMAX"), tmin: observed || morningLow ? o.tmin ?? null : fcv(d, "TMIN"),
       prcp: observed ? o.prcp ?? null : fcv(d, "PRCP"), snow: observed ? o.snow ?? null : fcv(d, "SNOW"),
       pop: observed ? null : fcv(d, "POP"),
     };
@@ -670,8 +673,15 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   // GHCN-Daily (and the NWS grid) date a low by the morning it ends, so this
   // morning's low is already past and tonight's is tomorrow's: show tonight's
   // forecast low, against tomorrow morning's normal and record.
-  const tonight = !historical && fc && !isNum(T.tmin) ? day(addDays(D, 1)) : null;
+  const tonight = !historical && fc ? day(addDays(D, 1)) : null;
   const tonightCell = () => {
+    // This morning's low, once reported, then tonight's forecast low.
+    if (T.tmin_obs) {
+      const c = tempCell(T.tmin, T.n_lo, T.dep_lo, T.rec_lo, T.rec_lo_yr, false, true);
+      c.insertBefore(h("div", { className: "alm-sub", text: "this morning (observed)" }), c.children[1] || null);
+      if (tonight && isNum(tonight.tmin)) c.append(h("div", { className: "alm-sub", text: `tonight ${F.t(tonight.tmin)} (forecast; normal ${F.t(tonight.n_lo)}, ${F.dep(tonight.dep_lo)})` }));
+      return c;
+    }
     if (!tonight || !isNum(tonight.tmin)) return tempCell(T.tmin, T.n_lo, T.dep_lo, T.rec_lo, T.rec_lo_yr, false, false);
     const c = tempCell(tonight.tmin, tonight.n_lo, tonight.dep_lo, tonight.rec_lo, tonight.rec_lo_yr, false, false);
     c.insertBefore(h("div", { className: "alm-sub", text: "tonight's low" }), c.children[1] || null);
@@ -717,7 +727,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     record_precip: round(r.rec_prcp, U.pd), record_precip_year: r.rec_prcp_yr, years_of_record: r.n_years,
   };
   facts.now = { latest_report: pick(L), latest_is_provisional: provisional.has(Ldate),
-    latest_from_nearby_station: subDay(Ldate) ? `${subDay(Ldate).source_name}, ${Math.round(subDay(Ldate).distance_km)} km away (this station had not reported)` : null, latest_label: latestLabel, today_forecast: fc ? { ...pick(T), tonight_low: tonight && isNum(tonight.tmin) ? { low: round(tonight.tmin), normal_low: round(tonight.n_lo), low_vs_normal: round(tonight.dep_lo), record_low: round(tonight.rec_lo), record_low_year: tonight.rec_lo_yr, class: tonight.class_lo } : null } : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
+    latest_from_nearby_station: subDay(Ldate) ? `${subDay(Ldate).source_name}, ${Math.round(subDay(Ldate).distance_km)} km away (this station had not reported)` : null, latest_label: latestLabel, today_forecast: fc ? { ...pick(T), low_is_this_mornings_observed_low: !!T.tmin_obs, tonight_low: tonight && isNum(tonight.tmin) ? { low: round(tonight.tmin), normal_low: round(tonight.n_lo), low_vs_normal: round(tonight.dep_lo), record_low: round(tonight.rec_lo), record_low_year: tonight.rec_lo_yr, class: tonight.class_lo } : null } : null, today_observed: historical ? pick(T) : null, observation_time: obsTime || null };
 
   // ---- 2. Past 5 and next 5 days
   const win = winDates.map(day);
@@ -726,15 +736,16 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     for (const r of win) {
       const kind = r.kind;
       if (isNum(r.tmax)) chartRows.push({ date: r.date, series: "High", value: r.tmax, kind });
-      if (isNum(r.tmin)) chartRows.push({ date: r.date, series: "Low", value: r.tmin, kind });
+      if (isNum(r.tmin)) chartRows.push({ date: r.date, series: "Low", value: r.tmin, kind: r.tmin_obs ? "observed" : kind });
       if (isNum(r.n_hi)) chartRows.push({ date: r.date, series: "Normal high", value: r.n_hi, kind: "normal" });
       if (isNum(r.n_lo)) chartRows.push({ date: r.date, series: "Normal low", value: r.n_lo, kind: "normal" });
       if (isNum(r.rec_hi)) chartRows.push({ date: r.date, series: "Record high", value: r.rec_hi, kind: "record" });
       if (isNum(r.rec_lo)) chartRows.push({ date: r.date, series: "Record low", value: r.rec_lo, kind: "record" });
     }
     for (const [series, key] of [["High", "tmax"], ["Low", "tmin"]]) {
-      const obs = win.filter((r) => r.kind !== "forecast" && isNum(r[key]));
-      const fcs = win.filter((r) => r.kind === "forecast" && isNum(r[key]));
+      const isObs = (r) => r.kind !== "forecast" || (key === "tmin" && r.tmin_obs);
+      const obs = win.filter((r) => isObs(r) && isNum(r[key]));
+      const fcs = win.filter((r) => !isObs(r) && isNum(r[key]));
       const a = obs[obs.length - 1];
       const b = fcs[0];
       if (a && b && a.date < b.date) {
@@ -745,7 +756,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     const tr = win.map((r) => h("tr", { className: r.kind === "forecast" ? "alm-fc" : "" },
       h("th", { scope: "row", text: `${fmtDay(r.date)}${r.date === D ? " (today)" : ""}` }),
       hasT ? h("td", { text: `${F.t(r.tmax)}${star(r.date, "TMAX")} ${F.dep(r.dep_hi)}`.trim() }) : null,
-      hasT ? h("td", { text: `${F.t(r.tmin)}${star(r.date, "TMIN")} ${F.dep(r.dep_lo)}`.trim() }) : null,
+      hasT ? h("td", { text: `${F.t(r.tmin)}${star(r.date, "TMIN")} ${F.dep(r.dep_lo)}${r.tmin_obs ? " (this morning, observed)" : ""}`.trim() }) : null,
       hasP ? h("td", { text: r.kind === "forecast" && isNum(r.pop) ? `${F.p(r.prcp)} (${Math.round(r.pop)}%)` : `${F.p(r.prcp)}${star(r.date, "PRCP")}` }) : null,
       hasSnow ? h("td", { text: `${F.s(r.snow)}${star(r.date, "SNOW")}` }) : null,
       h("td", { className: "alm-kind", text: r.kind === "forecast" ? "Forecast" : !isNum(r.tmax) && !isNum(r.prcp) ? "Not yet reported" : subDay(r.date) ? "Nearby station*" : provisional.has(r.date) ? "Provisional" : "Observed" })));
