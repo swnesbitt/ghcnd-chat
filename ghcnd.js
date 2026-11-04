@@ -1441,8 +1441,21 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     return text;
   }
 
+  // Models keep aliasing area_stations as "as" (a keyword) despite being told
+  // not to: rename keyword aliases after FROM or JOIN, and their references.
+  const KEYWORD_ALIAS = /\b(FROM|JOIN)\s+([A-Za-z_]\w*)\s+(?:AS\s+)?(as|at|on|to|in|by|end|all|do|or|is)\s+(?=ON\b|USING\b|WHERE\b|(?:LEFT\s+|INNER\s+|CROSS\s+)?JOIN\b|GROUP\b|ORDER\b|LIMIT\b|,|\)|$)/gi;
+  function fixKeywordAliases(text) {
+    const bad = new Set();
+    const out = text.replace(KEYWORD_ALIAS, (m, kw, table, alias) => {
+      bad.add(alias.toLowerCase());
+      return `${kw} ${table} ${alias}_ `;
+    });
+    if (!bad.size) return text;
+    return out.replace(/\b([A-Za-z_]\w*)\.(?=[A-Za-z_*"])/g, (m, a) => (bad.has(a.toLowerCase()) ? `${a}_.` : m));
+  }
+
   async function select(sql, maxRows) {
-    const text = guardSql(sql);
+    const text = fixKeywordAliases(guardSql(sql));
     let table;
     try {
       table = await q(`SELECT * FROM (${text}) LIMIT ${maxRows + 1}`);
