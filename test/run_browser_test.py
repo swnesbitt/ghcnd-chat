@@ -117,6 +117,8 @@ def main() -> int:
             if n_marks != 7:
                 print("CHART DOM:", page.evaluate("document.querySelector('.chart')?.outerHTML.slice(0, 600)"))
             check(n_marks == 7, "all seven charts rendered")
+            check(page.evaluate("document.querySelector('#log').dataset.streamed") == "true" and page.locator(".answer.draft").count() == 0,
+                  "the answer streamed in as it was written, then was replaced by the finished one")
             check(page.evaluate("document.body.dataset.xss") is None, "answer HTML sanitized")
             check(page.locator(".answer table").count() == 1, "answer markdown table rendered")
             ans = page.text_content(".answer table")

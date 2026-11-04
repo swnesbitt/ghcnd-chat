@@ -261,11 +261,78 @@ function clip(text, max = 16000) {
  * @param {AbortSignal} o.signal
  * @returns {Promise<string>} the assistant's final text
  */
+// Streamed replies show the answer as it is written (a long table can take
+// the model most of a minute). Servers that refuse stream get plain requests.
+let streamOff = false;
+
+// Read a chat completion, streamed (server-sent events) or not. Text is passed
+// to onText as it arrives, until the reply turns out to be tool calls.
+async function readCompletion(resp, onText) {
+  if (!(resp.headers.get("content-type") || "").includes("text/event-stream")) {
+    return (await resp.json()).choices?.[0]?.message;
+  }
+  const msg = { role: "assistant", content: "" };
+  const calls = [];
+  let any = false;
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const line = (raw) => {
+    const t = raw.trim();
+    if (!t.startsWith("data:")) return;
+    const data = t.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    let j;
+    try {
+      j = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+    const d = j.choices?.[0]?.delta;
+    if (!d) return;
+    any = true;
+    for (const tc of d.tool_calls || []) {
+      const k = Number.isInteger(tc.index) ? tc.index : calls.length;
+      calls[k] ||= { id: "", type: "function", function: { name: "", arguments: "" } };
+      if (tc.id) calls[k].id = tc.id;
+      if (tc.function?.name) calls[k].function.name += tc.function.name;
+      if (tc.function?.arguments) calls[k].function.arguments += tc.function.arguments;
+    }
+    if (d.content) {
+      msg.content += d.content;
+      if (!calls.length) onText(msg.content);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      line(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+    }
+  }
+  line(buf);
+  if (!any) return null;
+  const tc = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
+  if (tc.length) msg.tool_calls = tc;
+  return msg;
+}
+
+function looksLikeToolCall(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 4000) return false;
+  if (/<\|?tool_call|```tool|<function[=>]|^\[?\s*\{\s*"(name|function|tool)"\s*:/i.test(t)) return true;
+  return TOOL_SCHEMAS.some((x) => new RegExp(`^\\W*${x.function.name}\\s*[({]`).test(t));
+}
+
 export async function runTurn({ lumen, model, messages, handlers, onStep = () => {}, signal }) {
   const seen = new Map(); // identical calls this turn, so a model stuck repeating itself is told so
   for (let step = 0; step < CONFIG.maxToolSteps; step++) {
     onStep({ type: "thinking" });
-    const resp = await lumen.api("/v1/chat/completions", {
+    const request = (stream) => lumen.api("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -274,11 +341,30 @@ export async function runTurn({ lumen, model, messages, handlers, onStep = () =>
         tools: TOOL_SCHEMAS,
         tool_choice: "auto",
         temperature: 0.2,
+        ...(stream ? { stream: true } : {}),
       }),
       signal,
     });
-    const body = await resp.json();
-    const msg = body.choices?.[0]?.message;
+    let resp;
+    if (streamOff) {
+      resp = await request(false);
+    } else {
+      try {
+        resp = await request(true);
+      } catch (err) {
+        if (signal?.aborted || err?.status !== 400 || !/stream/i.test(err.message || "")) throw err;
+        streamOff = true;
+        resp = await request(false);
+      }
+    }
+    let msg = await readCompletion(resp, (text) => onStep({ type: "text", text }));
+    // Some servers' streaming leaves a tool call as plain text: if a streamed
+    // reply looks like one, ask again without streaming (and stop streaming).
+    if (!streamOff && msg && !msg.tool_calls?.length && looksLikeToolCall(msg.content)) {
+      streamOff = true;
+      onStep({ type: "thinking" });
+      msg = await readCompletion(await request(false), () => {});
+    }
     if (!msg) throw new Error("The model returned no message.");
     messages.push(cleanAssistant(msg));
     if (!msg.tool_calls?.length) return msg.content ?? "";

@@ -371,9 +371,44 @@ function stepLabel(name, args = {}) {
 
 const steps = new Map();
 
+// The answer as the model writes it (streamed); replaced by the finished one.
+let draft = null;
+let draftFrame = 0;
+let draftText = "";
+function clearDraft() {
+  cancelAnimationFrame(draftFrame);
+  draftFrame = 0;
+  draft?.remove();
+  draft = null;
+}
+function showDraft(text) {
+  draftText = text;
+  if (draftFrame) return;
+  draftFrame = requestAnimationFrame(() => {
+    draftFrame = 0;
+    if (!draft) {
+      draft = el("div", { className: "answer draft", "aria-live": "off" });
+      $("log").append(draft);
+      $("log").dataset.streamed = "true";
+    }
+    draft.innerHTML = DOMPurify.sanitize(marked.parse(cleanModelText(draftText) || ""));
+    for (const a of draft.querySelectorAll("a")) a.rel = "noopener noreferrer";
+    scrollToEnd();
+  });
+}
+
 function onStep(s) {
-  if (s.type === "thinking") setStatus("Thinking");
+  if (s.type === "text") {
+    setStatus("Writing the answer");
+    showDraft(s.text);
+    return;
+  }
+  if (s.type === "thinking") {
+    clearDraft();
+    setStatus("Thinking");
+  }
   if (s.type === "tool_start") {
+    clearDraft();
     logEvent(`call ${s.name}`, s.args);
     setStatus(stepLabel(s.name, s.args || {}));
     const details = el("details", { className: "step running" },
@@ -831,10 +866,12 @@ async function ask(text) {
     };
     const answer = await runTurn({ lumen, model, messages, handlers, onStep, signal: running.signal });
     logEvent("answer", answer);
+    clearDraft();
     addAnswer(answer);
   } catch (err) {
     // Drop the unfinished turn so the next request is a valid conversation.
     messages.length = before;
+    clearDraft();
     logEvent("turn failed", err?.stack || err?.message || String(err));
     if (running.signal.aborted) addError("Stopped. This question was not kept in the conversation.");
     else if (!handleLumenError(err)) addError(err.message || String(err));

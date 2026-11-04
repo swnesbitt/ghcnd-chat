@@ -6,6 +6,7 @@ each user question and records every request in requests.jsonl.
 """
 
 import json
+import time
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -169,8 +170,34 @@ class Handler(BaseHTTPRequestHandler):
                                    "function": {"name": name, "arguments": json.dumps(args)}}]}
         else:
             msg = {"role": "assistant", "content": FINAL}
+        if body.get("stream"):
+            return self.stream(msg)
         self.reply(200, {"choices": [{"index": 0, "message": msg, "finish_reason": "stop"}],
                          "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+    def stream(self, msg):
+        """The same reply as server-sent events, in small pieces, as Lumen streams."""
+        self.send_response(200)
+        self.cors()
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+
+        def send(delta):
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}).encode() + b"\n\n")
+            self.wfile.flush()
+
+        send({"role": "assistant"})
+        for tc in msg.get("tool_calls") or []:
+            a = tc["function"]["arguments"]
+            send({"tool_calls": [{"index": 0, "id": tc["id"], "type": "function", "function": {"name": tc["function"]["name"], "arguments": a[: len(a) // 2]}}]})
+            send({"tool_calls": [{"index": 0, "function": {"arguments": a[len(a) // 2:]}}]})
+        text = msg.get("content") or ""
+        for i in range(0, len(text), 24):
+            send({"content": text[i:i + 24]})
+            time.sleep(0.05)
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+        self.close_connection = True
 
     def log_message(self, *a):
         pass
