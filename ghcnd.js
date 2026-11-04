@@ -408,7 +408,13 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     };
   }
 
-  async function loadSeries({ station, elements, start_year, end_year, recent: fillRecentDays = true, tail_min_year: tailMin = -Infinity } = {}) {
+  async function loadSeries({ station, elements, start_year, end_year, recent: fillRecentDays = true, tail_min_year: tailMin = -Infinity, month_days: monthDays = null } = {}) {
+    // Only some calendar days ("07-04"), or whole months ("07"), in every year.
+    const mdList = (Array.isArray(monthDays) ? monthDays : monthDays ? [monthDays] : [])
+      .map((x) => String(x).trim()).filter((x) => /^\d{2}(-\d{2})?$/.test(x));
+    const mdFilter = mdList.length
+      ? `WHERE ${mdList.map((x) => (x.length === 2 ? `substr(DATE, 5, 2) = '${x}'` : `substr(DATE, 5, 4) = '${x.replace("-", "")}'`)).join(" OR ")}`
+      : "";
     const id = String(station || "").trim().toUpperCase();
     if (!STATION_RE.test(id)) throw new ToolError(`"${station}" is not a GHCN-Daily station ID (11 characters).`);
     const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
@@ -507,7 +513,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       await q(`DELETE FROM obs WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`DELETE FROM substituted WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`
-        CREATE OR REPLACE TEMP TABLE _raw AS ${parts.join(" UNION ALL ")};
+        CREATE OR REPLACE TEMP TABLE _raw AS SELECT * FROM (${parts.join(" UNION ALL ")}) ${mdFilter};
         INSERT INTO obs
           SELECT ID, ${sqlString(p.el)}, strptime(DATE, '%Y%m%d')::DATE, round(DATA_VALUE::DOUBLE * ${scale}, 1), M_FLAG, OBS_TIME
           FROM _raw WHERE Q_FLAG IS NULL;`);
@@ -662,7 +668,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   // recent-day fill.
   const MAX_SERIES_STATIONS = 300;
   const MAX_SERIES_MB = 800;
-  async function loadSeriesMany({ stations: ids, elements, start_year, end_year, min_years, daily, ...areaArgs } = {}) {
+  async function loadSeriesMany({ stations: ids, elements, start_year, end_year, min_years, daily, month_days, ...areaArgs } = {}) {
     const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
     for (const el of els) if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${el}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
     let list = Array.isArray(ids) ? ids.map((x) => String(x).trim().toUpperCase()).filter((x) => STATION_RE.test(x)) : [];
@@ -689,7 +695,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     // Many stations' daily rows add up (a century of TMAX and TMIN at 150
     // stations is over 10 million rows), so beyond 40 stations each one is
     // reduced to monthly summaries in obs_monthly as it loads, unless daily is set.
-    const keepDaily = daily === true || (daily !== false && list.length <= 40);
+    const keepDaily = daily === true || (Array.isArray(month_days) ? month_days.length > 0 : !!month_days) || (daily !== false && list.length <= 40);
 
     // Download first, several stations at a time (network), then load them
     // one at a time (the database). Per-station files are small.
@@ -719,7 +725,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       }
       onActivity({ kind: "status", text: `Loading station ${i + 1} of ${list.length}` });
       try {
-        const r = await loadSeries({ station: list[i], elements: els, start_year, end_year, recent: false, tail_min_year: new Date().getUTCFullYear() - 1 });
+        const r = await loadSeries({ station: list[i], elements: els, start_year, end_year, month_days, recent: false, tail_min_year: new Date().getUTCFullYear() - 1 });
         const got = r.results.filter((x) => x.loaded);
         if (got.length) ok.push(list[i]);
         else failed.push({ station: list[i], reason: r.results.map((x) => x.reason).filter(Boolean).join("; ") || "nothing loaded" });
@@ -1153,13 +1159,38 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   const FORBIDDEN =
     /\b(read_\w+|copy|attach|detach|install|load|pragma|set|reset|export|import|create|insert|update|delete|drop|alter|call|checkpoint|glob|parquet_\w+|sniff_csv|query_table)\b|https?:|s3:|\/\//i;
 
+  // Models often think aloud in SQL comments ("a smaller set of stations"), so
+  // comments are removed (outside string literals) before the checks and the run.
+  function stripComments(sql) {
+    let out = "";
+    for (let i = 0; i < sql.length; i++) {
+      const c = sql[i];
+      if (c === "'" || c === '"') {
+        const j = sql.indexOf(c, i + 1);
+        const end = j < 0 ? sql.length : j;
+        out += sql.slice(i, end + 1);
+        i = end;
+      } else if (c === "-" && sql[i + 1] === "-") {
+        const j = sql.indexOf("\n", i);
+        i = j < 0 ? sql.length : j - 1;
+      } else if (c === "/" && sql[i + 1] === "*") {
+        const j = sql.indexOf("*/", i + 2);
+        i = j < 0 ? sql.length : j + 1;
+        out += " ";
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+
   function guardSql(sql) {
-    const text = String(sql || "").trim().replace(/;+\s*$/, "");
+    const text = stripComments(String(sql || "")).trim().replace(/;+\s*$/, "");
     if (!text) throw new ToolError("Empty query.");
     if (text.includes(";")) throw new ToolError("Send one statement at a time.");
     if (!FIRST_WORD.test(text)) throw new ToolError("Only read-only queries (SELECT, WITH, SUMMARIZE, DESCRIBE, PIVOT) are allowed.");
     const m = text.replace(/'(?:[^']|'')*'/g, "''").match(FORBIDDEN);
-    if (m) throw new ToolError(`"${m[0]}" is not allowed here; query the tables stations, coverage, obs and elements.`);
+    if (m) throw new ToolError(`"${m[0]}" is not allowed here: only read-only queries of the loaded tables (stations, coverage, elements, obs, obs_monthly, provisional, substituted, records, area_stations, forecast).`);
     return text;
   }
 
