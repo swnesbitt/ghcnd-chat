@@ -331,8 +331,15 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     const labels = [];
     let point = null;
     let resolved = null;
-    const st = state ? String(state).trim().toUpperCase() : "";
-    const ctry = country ? String(country).trim().toUpperCase() : "";
+    let st = state ? String(state).trim().toUpperCase() : "";
+    let ctry = country ? String(country).trim().toUpperCase() : "";
+    if (US_STATES[st]) st = US_STATES[st];
+    // Puerto Rico by its postal or ISO code or name (its FIPS code is RQ, and
+    // its stations carry state PR).
+    if (["PR", "PUERTO RICO"].includes(ctry) && !st) {
+      st = "PR";
+      ctry = "";
+    }
 
     if (place) {
       resolved = await resolvePlace(place, st, ctry);
@@ -362,6 +369,9 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         labels.push(st);
       }
       if (ctry) {
+        if (!toRows(await q(`SELECT 1 FROM stations WHERE country = ${sqlString(ctry)} LIMIT 1`)).length) {
+          throw new ToolError(`No stations have country code ${ctry}. country is the FIPS code (the first two characters of station IDs), which often differs from ISO: e.g., Germany GM, United Kingdom UK, Spain SP, Portugal PO, Japan JA, China CH, Australia AS, Puerto Rico RQ (or state "PR"), US Virgin Islands VQ. If unsure, call find_stations with a place in that country and read the IDs.`);
+        }
         where.push(`s.country = ${sqlString(ctry)}`);
         labels.push(ctry);
       }
@@ -853,8 +863,39 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       label = `${area.label}${minY ? `, ${minY}+ years of ${els.join(" and ")}` : ""}`;
       if (!list.length) throw new ToolError(`No stations in ${area.label} have ${els.join(" and ")} records matching that.`);
     }
+    // A few years at many stations: NOAA's by_year files (about 15 MB per
+    // element and year, every station in the world) are far smaller than
+    // each station's whole history (about 0.3 MB per station and element).
+    const ya = Number.isFinite(start_year) ? Math.floor(start_year) : null;
+    const yb = Number.isFinite(end_year) ? Math.floor(end_year) : ya;
+    const thisYear = new Date().getUTCFullYear();
+    const span = ya != null && yb != null && yb >= ya ? Math.min(yb, thisYear) - ya + 1 : null;
+    const noDays = !(Array.isArray(month_days) ? month_days.length : month_days);
+    if (span && span <= 10 && noDays && list.length > 50 * span) {
+      const results = [];
+      let mb = 0;
+      const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+      for (let y = ya; y <= Math.min(yb, thisYear); y++) {
+        onActivity({ kind: "status", text: `Loading ${y} for ${list.length} stations from the yearly files` });
+        const end = y === thisYear ? yesterday : `${y}-12-31`;
+        const r = await loadArea({ stations: list, elements: els, start_date: `${y}-01-01`, end_date: end });
+        mb = r.downloaded_mb_this_session;
+        for (const x of r.results) results.push({ year: y, ...x });
+      }
+      onActivity({ kind: "status", text: "" });
+      return {
+        area: label,
+        stations_requested: list.length,
+        years: `${ya}-${Math.min(yb, thisYear)}`,
+        method: "NOAA by_year files (every station's days in those years), filtered to these stations",
+        results,
+        downloaded_mb_this_session: mb,
+        table: "obs(station, element, date, value, m_flag, obs_time); join stations for names",
+        note: "Daily rows for every requested station are in obs. Compute per-station statistics first and keep stations with nearly complete years (e.g., at least 330 days in a full year) before averaging across stations; report how many stations that leaves.",
+      };
+    }
     if (list.length > MAX_SERIES_STATIONS) {
-      throw new ToolError(`${list.length} stations match (${label}); the limit is ${MAX_SERIES_STATIONS}. Raise min_years, use a smaller area, or limit the years.`);
+      throw new ToolError(`${list.length} stations match (${label}); the limit is ${MAX_SERIES_STATIONS}. Raise min_years or use a smaller area; for a few years at every station, give start_year and end_year (up to 10 years) to read NOAA's yearly files instead.`);
     }
     const startBytes = stats.bytes;
     const ok = [];
