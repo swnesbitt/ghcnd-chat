@@ -172,7 +172,7 @@ def main() -> int:
                 page.wait_for_timeout(250)
             copied = page.evaluate("navigator.clipboard.readText()")
             print("copied log head:", copied[:300].replace("\n", " / "))
-            check("GHCN-Daily Chat log" in copied and "What were the ten wettest years" in copied
+            check("AI Climatologist log" in copied and "What were the ten wettest years" in copied
                   and "run_sql failed" in copied and "read_csv" in copied, "copied log has question, calls and errors")
             check("sk_test" not in copied, "copied log never includes the Lumen key")
             fc = json.loads(tool_out[19])

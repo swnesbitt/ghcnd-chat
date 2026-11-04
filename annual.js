@@ -352,6 +352,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
       NULL::DOUBLE AS gdd, NULL::DOUBLE AS hdd, NULL::DOUBLE AS cdd
     FROM p`);
   const provisional = new Set((await g.sql(`SELECT DISTINCT strftime(date, '%Y-%m-%d') AS d FROM provisional WHERE station = ${sq(st.id)}`)).map((r) => r.d));
+  const acisFrom = (await g.sql(`SELECT strftime(min(date), '%Y-%m-%d') AS d FROM acis_filled WHERE station = ${sq(st.id)}`))[0]?.d;
 
   // Normals by month-day: NCEI first, else the station's own smoothed 1991-2020 means.
   const off = official.status === "fulfilled" ? official.value : null;
@@ -867,7 +868,7 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
     ? "The summaries are written by an AI model from the numbers on this page, so they may make mistakes; check important values against the charts and tables."
     : "Sign in to Lumen on the GHCN chat tab for AI-written summaries; until then they are plain templated text." });
   page.append(h("footer", { className: "alm-foot" }, aiNote,
-    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id}, ${firstYear}–${latest.slice(0, 4)})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional)` : ""}${subRows.length ? `; ${[...new Set(subRows.map((r) => fmtDay(r.d, { month: "short", day: "numeric" })))].join(", ")} not reported here and shown from ${[...new Set(subRows.map((r) => `${r.source_name} (${r.source})`))].join(" and ")}, marked * in the day values` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020 where available, otherwise this station's own 1991–2020 averages. Records, ranges and ranks use this station's own history and may differ from official records; a year counts as complete with at least 90% of its days reported. Köppen class after Peel et al. (2007) and Beck et al. (2018).` })));
+    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id}, ${firstYear}–${latest.slice(0, 4)})${acisFrom ? `, continued from ${acisFrom} with the NOAA Regional Climate Centers' ACIS, where NOAA's per-station file ends` : ""}${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional)` : ""}${subRows.length ? `; ${[...new Set(subRows.map((r) => fmtDay(r.d, { month: "short", day: "numeric" })))].join(", ")} not reported here and shown from ${[...new Set(subRows.map((r) => `${r.source_name} (${r.source})`))].join(" and ")}, marked * in the day values` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020 where available, otherwise this station's own 1991–2020 averages. Records, ranges and ranks use this station's own history and may differ from official records; a year counts as complete with at least 90% of its days reported. Köppen class after Peel et al. (2007) and Beck et al. (2018).` })));
 
   onStatus("Drawing charts");
   if (state.updateT) await state.updateT(state.tYear);

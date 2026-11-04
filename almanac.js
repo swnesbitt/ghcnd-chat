@@ -485,6 +485,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
     }
   }
   const provisional = new Set((await g.sql(`SELECT DISTINCT strftime(date, '%Y-%m-%d') AS d FROM provisional WHERE station = ${sq(st.id)}`)).map((r) => r.d));
+  const acisFrom = (await g.sql(`SELECT strftime(min(date), '%Y-%m-%d') AS d FROM acis_filled WHERE station = ${sq(st.id)}`))[0]?.d;
   const subRows = await g.sql(`SELECT element, strftime(date, '%Y-%m-%d') AS d, source, source_name, distance_km FROM substituted WHERE station = ${sq(st.id)} ORDER BY date`);
   const subs = new Map(subRows.map((r) => [`${r.element}|${r.d}`, r]));
   const star = (date, el) => (subs.has(`${el}|${date}`) ? "*" : "");
@@ -1165,7 +1166,7 @@ export async function renderAlmanac(out, input, { onStatus = () => {}, asOf = nu
   // ---- Footer
   page.append(h("footer", { className: "alm-foot" },
     h("p", { className: "alm-ai", text: "This almanac is generated automatically. Its numbers are computed from NOAA data, and the text in the blue boxes is written by an AI model, so it may make mistakes; check important values against the sources." }),
-    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id})${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional, not yet in GHCN-Daily)` : ""}${subRows.length ? `; days this station had not reported filled from the nearest station that had (marked *)` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020${source.temperature?.startsWith("NOAA") ? "" : " (not available for this station; normals computed from its own 1991–2020 data)"}; National Weather Service forecast${fc ? ` (NDFD grid ${fc.nws_grid}, issued ${new Date(fc.issued).toLocaleString()})` : ""}. Records use this station's own history and may differ from official records.` })));
+    h("p", { className: "fine", text: `Sources: NOAA NCEI GHCN-Daily (station ${st.id})${acisFrom ? `, continued from ${acisFrom} with the NOAA Regional Climate Centers' ACIS, where NOAA's per-station file ends` : ""}${provisional.size ? `, with ${[...provisional].sort()[0]} onward from the NOAA Regional Climate Centers' ACIS (provisional, not yet in GHCN-Daily)` : ""}${subRows.length ? `; days this station had not reported filled from the nearest station that had (marked *)` : ""}; NOAA NCEI U.S. Climate Normals 1991–2020${source.temperature?.startsWith("NOAA") ? "" : " (not available for this station; normals computed from its own 1991–2020 data)"}; National Weather Service forecast${fc ? ` (NDFD grid ${fc.nws_grid}, issued ${new Date(fc.issued).toLocaleString()})` : ""}. Records use this station's own history and may differ from official records.` })));
 
   // ---- Text: templates now, the model's when it answers
   const templates = templateText(facts, U, F);

@@ -110,6 +110,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       FROM 'station_index.parquet';
     CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);
     CREATE TABLE provisional (station VARCHAR, element VARCHAR, date DATE);
+    CREATE TABLE acis_filled (station VARCHAR, element VARCHAR, date DATE);
     CREATE TABLE obs_monthly (station VARCHAR, element VARCHAR, year INTEGER, month INTEGER, days INTEGER, mean DOUBLE, total DOUBLE, min DOUBLE, max DOUBLE);
     CREATE TABLE substituted (station VARCHAR, element VARCHAR, date DATE, source VARCHAR, source_name VARCHAR, distance_km DOUBLE);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
@@ -536,6 +537,15 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       const fromYear = p.historyLast ? Math.max(p.y0, Number(p.historyLast.slice(0, 4))) : p.y0;
       p.tail = [];
       if (!p.historyLast || (p.historyLast < `${p.y1}1231` && p.historyLast < recent)) {
+        // Per-station files that stopped within the last three years (many
+        // airport stations' stop in February 2025) are continued from ACIS:
+        // one small request instead of whole by_year element-years (about
+        // 150 MB for four elements over 2025-26).
+        if (p.historyLast && ACIS_ELEMS[p.el] && /^(US|RQ|VQ|AQ|GQ|CQ)/.test(id)
+            && p.historyLast >= `${nowYear - 3}0101` && p.y1 >= nowYear - 1) {
+          p.acisFrom = new Date(Date.parse(`${p.historyLast.replace(/(\d{4})(\d\d)(\d\d)/, "$1-$2-$3")}T00:00:00Z`) + 864e5).toISOString().slice(0, 10);
+          continue;
+        }
         // Loading many stations: each by_year element-year holds every station
         // (15-30 MB), so only the recent years that stale per-station files
         // miss are filled (shared by all stations); older gaps are left.
@@ -587,6 +597,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       const scale = ELEMENTS[p.el].scale;
       await q(`DELETE FROM obs WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`DELETE FROM substituted WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
+      await q(`DELETE FROM acis_filled WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`
         CREATE OR REPLACE TEMP TABLE _raw AS SELECT * FROM (${parts.join(" UNION ALL ")}) ${mdFilter};
         INSERT INTO obs
@@ -621,6 +632,25 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         loaded.set(`${id}/${p.el}`, { station: id, ...summary, record_first: c.first_year, record_last: c.last_year });
       }
     }
+    // Continue stale per-station files from ACIS (see the tail plan above).
+    const acisPlans = plans.filter((p) => p.acisFrom && summaries.some((s) => s.element === p.el && s.loaded));
+    if (acisPlans.length) {
+      try {
+        const added = await continueFromAcis(id, acisPlans);
+        for (const sm of summaries) {
+          const a = added[sm.element];
+          if (!a) continue;
+          sm.days += a.days;
+          sm.last_date = a.last;
+          sm.source += ` + ACIS ${a.first} to ${a.last}`;
+          const k = `${id}/${sm.element}`;
+          if (loaded.has(k)) Object.assign(loaded.get(k), { last_date: a.last, days: sm.days, source: sm.source });
+        }
+      } catch (err) {
+        for (const sm of summaries) if (acisPlans.some((p) => p.el === sm.element)) sm.source += ` (ACIS unavailable for the months after: ${err.message})`;
+      }
+    }
+
     // GHCN-Daily runs a few days behind; fill the newest days from ACIS.
     let provisional = null;
     const wantsRecent = !Number.isFinite(end_year) || end_year >= nowYear;
@@ -668,6 +698,69 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   // added to obs in GHCN units and listed in provisional.
   const ACIS = "https://data.rcc-acis.org/StnData";
   const ACIS_ELEMS = { TMAX: "maxt", TMIN: "mint", PRCP: "pcpn", SNOW: "snow", SNWD: "snwd" };
+
+  // ACIS value (°F, inches, "T", "M") to GHCN-Daily units, or null.
+  function acisToGhcn(el, raw) {
+    const s = String(raw ?? "M").trim();
+    if (s === "M" || s === "S" || s === "") return null;
+    const trace = s === "T";
+    const v = trace ? 0 : parseFloat(s);
+    if (!Number.isFinite(v)) return null;
+    const value = el === "TMAX" || el === "TMIN" ? Math.round(((v - 32) * 5) / 9 * 10) / 10
+      : el === "PRCP" ? Math.round(v * 25.4 * 10) / 10 : Math.round(v * 25.4);
+    return { value, trace };
+  }
+
+  // Months to years after a station's per-station file ends, from ACIS in one
+  // request. Rows go into obs and table acis_filled; the last ten days are
+  // also listed in provisional, as GHCN-Daily itself would still lag there.
+  async function continueFromAcis(id, plans) {
+    const today = new Date().toLocaleDateString("en-CA");
+    const from = plans.map((p) => p.acisFrom).sort()[0];
+    const yEnd = plans.map((p) => `${p.y1}-12-31`).sort().pop();
+    const to = yEnd < today ? yEnd : today;
+    const els = plans.map((p) => p.el);
+    const params = new URLSearchParams({ sid: id, sdate: from, edate: to, elems: els.map((e) => ACIS_ELEMS[e]).join(","), output: "json" });
+    const resp = await fetch(`${ACIS}?${params}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const body = await resp.json();
+    if (body.error) throw new Error(body.error);
+    const bounds = await tempBounds(id);
+    const tCol = els.indexOf("TMAX") + 1;
+    const nCol = els.indexOf("TMIN") + 1;
+    const rows = [];
+    for (const rec of body.data || []) {
+      const date = rec[0];
+      const hi = tCol ? parseFloat(rec[tCol]) : NaN;
+      const lo = nCol ? parseFloat(rec[nCol]) : NaN;
+      const badPair = Number.isFinite(hi) && Number.isFinite(lo) && (hi < lo || (hi === 0 && lo === 0));
+      plans.forEach((p, i) => {
+        if (date < p.acisFrom || date > `${p.y1}-12-31`) return;
+        const v = acisToGhcn(p.el, rec[i + 1]);
+        if (!v) return;
+        if ((p.el === "TMAX" || p.el === "TMIN") && (badPair || !bounds.ok(p.el, date, v.value))) return;
+        rows.push({ el: p.el, date, ...v });
+      });
+    }
+    const out = {};
+    if (!rows.length) return out;
+    const recentCut = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 10);
+    for (let i = 0; i < rows.length; i += 2000) {
+      const part = rows.slice(i, i + 2000);
+      await q(`INSERT INTO obs VALUES ${part.map((r) => `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}', ${r.value}, ${r.trace ? "'T'" : "NULL"}, NULL)`).join(", ")}`);
+      await q(`INSERT INTO acis_filled VALUES ${part.map((r) => `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}')`).join(", ")}`);
+    }
+    const recentRows = rows.filter((r) => r.date >= recentCut);
+    await q(`DELETE FROM provisional WHERE station = ${sqlString(id)}`);
+    if (recentRows.length) await q(`INSERT INTO provisional VALUES ${recentRows.map((r) => `(${sqlString(id)}, ${sqlString(r.el)}, DATE '${r.date}')`).join(", ")}`);
+    for (const r of rows) {
+      const o = (out[r.el] ||= { days: 0, first: r.date, last: r.date });
+      o.days++;
+      if (r.date < o.first) o.first = r.date;
+      if (r.date > o.last) o.last = r.date;
+    }
+    return out;
+  }
 
   async function fillRecent(id, elements) {
     const els = elements.filter((e) => ACIS_ELEMS[e]);

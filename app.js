@@ -70,7 +70,7 @@ function buildLog() {
   const v = logbook.version;
   const t = logbook.turn;
   const lines = [
-    "GHCN-Daily Chat log",
+    "AI Climatologist log",
     `Copied: ${new Date().toISOString()} (${new Date().toLocaleString()})`,
     `Page: ${location.origin}${location.pathname}${v ? ` (build ${v.commit}, ${v.built_at})` : ""}`,
     `Lumen: ${CONFIG.lumenBaseUrl}   Model: ${$("model")?.value || "none"}`,
@@ -945,7 +945,7 @@ async function showAlmanac(query, asOf = null) {
     // For the daily email sender (scripts/send_almanac.py), which reads the page.
     window.almanacResult = { station: { id: station.id, name: station.name, state: station.state }, headline: r.headline, asOf: r.asOf };
     history.replaceState(null, "", `${location.pathname}?station=${station.id}${r.asOf ? `&date=${r.asOf}` : ""}`);
-    document.title = `${station.name} almanac | GHCN-Daily Chat`;
+    document.title = `${station.name} almanac | AI Climatologist`;
   } catch (err) {
     setAlmStatus("");
     logEvent("almanac failed", err?.stack || err?.message || String(err));
@@ -1103,7 +1103,7 @@ async function showAnnual(query, year = null) {
     });
     id = r.station.id;
     history.replaceState(null, "", `${location.pathname}?annual=${id}${year ? `&year=${r.state.tYear ?? r.state.pYear}` : ""}`);
-    document.title = `${r.station.name} annual climate | GHCN-Daily Chat`;
+    document.title = `${r.station.name} annual climate | AI Climatologist`;
   } catch (err) {
     setStatus("");
     logEvent("annual failed", err?.stack || err?.message || String(err));

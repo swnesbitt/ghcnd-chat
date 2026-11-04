@@ -1,4 +1,4 @@
-# GHCN-Daily chat
+# AI Climatologist (GHCN-Daily chat)
 
 A static web page for asking questions of NOAA's Global Historical Climatology
 Network Daily (GHCNd) record in plain language. There is no server. Everything
@@ -137,6 +137,11 @@ station for 1996–2025 is 64 files, 160 MB and about 40 seconds. (The bucket
 answers range requests but does not expose `Content-Range` to browsers, so
 DuckDB-WASM's own HTTP reader would download whole files; the page reads the
 ranges itself and gives DuckDB a buffer holding only those bytes.)
+
+Per-station files that stopped within the last three years (many airport
+stations' stop in February 2025) are continued from ACIS in one small request
+instead of the `by_year` files, which cost about 150 MB for four elements over
+2025–26; those rows are listed in `acis_filled`.
 
 GHCN-Daily runs a few days behind. For US stations, `load_series` then fills
 the newest days from ACIS, the NOAA Regional Climate Centers' database
