@@ -83,11 +83,18 @@ def main() -> int:
             check(n_charts >= 6, "charts drawn (window, precip, departures, cumulative precip, snow, frost, GDD)")
             now = page.text_content(".alm-now")
             print("now table:", " | ".join(now.split()))
-            check("normal 65°F" in now, "today's normal high matches NCEI (Oct 17: 65.4°F)")
+            # Today's NCEI normal high, from the NCEI file itself (the test runs on any date).
+            import csv, io, datetime, urllib.request
+            md = datetime.date.today().strftime("%m-%d")
+            ncei = urllib.request.urlopen("https://www.ncei.noaa.gov/data/normals-daily/1991-2020/access/USC00118740.csv", timeout=60).read().decode()
+            want = next((round(float(r["DLY-TMAX-NORMAL"])) for r in csv.DictReader(io.StringIO(ncei)) if r["DATE"].strip() == md), None)
+            check(want is not None and f"normal {want}°F" in now, f"today's normal high matches NCEI ({want}°F)")
             win_rows = page.eval_on_selector_all("#alm-outlook ~ .alm-scroll tbody tr", "r => r.map(x => x.innerText.replace(/\\t/g, ' | '))")
             print("window rows:\n  " + "\n  ".join(win_rows))
-            check(any("Oct 16" in r and "Provisional" in r and "72°F" in r for r in win_rows), "Oct 16 filled from ACIS (72°F) and marked provisional")
-            check(("(provisional)" in now and "Oct 16" in now) or "(from a nearby station*)" in now, "latest report is provisional (or from a nearby station when this one has not reported)")
+            # GHCN-Daily runs days behind, so the newest observed days come from ACIS (or a nearby station).
+            observed = [r for r in win_rows if "Forecast" not in r and "Not yet" not in r]
+            check(any("Provisional" in r or "Nearby station" in r for r in observed[-3:]), "the newest observed days are marked provisional (ACIS) or from a nearby station")
+            check(any(t in now for t in ("(provisional)", "(from a nearby station*)", "Yesterday")), "the latest report is labeled")
             check("AI model" in page.text_content(".alm-ai") and "may make mistakes" in page.text_content(".alm-ai"), "AI note at the bottom")
             check(page.url.endswith("?station=USC00118740"), "URL holds the station for sharing")
             notes = page.eval_on_selector_all(".alm-subnote", "n => n.map(x => x.textContent)")
