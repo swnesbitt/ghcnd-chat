@@ -997,7 +997,7 @@ async function showAlmanac(query, asOf = null) {
 // A place name lists the nearest stations (3 at first, "More stations" for
 // the rest) and starts the almanac on the best long-record one; picking
 // another station in the list switches to it. A station ID skips the list.
-const STATION_ID = /^[A-Z0-9]{11}$/i;
+const STATION_ID = /^(?=.*\d)[A-Za-z0-9_-]{11}$/;
 
 function renderChoices(near, selected, { box = $("alm-choices"), busy = () => almanacRunning, pick = (id) => showAlmanac(id), what = "The almanac" } = {}) {
   const us = near.place?.country === "US" || near.stations[0]?.country === "US";
@@ -1082,7 +1082,7 @@ async function startAlmanac(query, asOf = null) {
   if (!q || almanacRunning) return;
   if (STATION_ID.test(q)) {
     $("alm-choices").hidden = true;
-    return showAlmanac(q.toUpperCase(), asOf);
+    return showAlmanac(q, asOf);
   }
   $("alm-status").textContent = "Finding stations";
   try {
@@ -1157,7 +1157,7 @@ async function startAnnual(query, year = null) {
   if (!q || annualRunning) return;
   if (STATION_ID.test(q)) {
     $("ann-choices").hidden = true;
-    return showAnnual(q.toUpperCase(), year);
+    return showAnnual(q, year);
   }
   $("ann-status").textContent = "Finding stations";
   try {

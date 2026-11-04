@@ -516,7 +516,11 @@ export async function renderAnnual(out, input, { onStatus = () => {}, year = nul
   });
   const periodLabel = (y, endMd) => (endMd === "12-31" ? String(y) : `${y} through ${fmtDay(`${y}-${endMd}`, { month: "short", day: "numeric" })}`);
 
-  const yearOpts = years.map((y) => [y, y === thisYear && latest.slice(5) !== "12-31" ? `${y} (so far)` : String(y)]);
+  // The newest year is "so far" while it is still this year; a station that
+  // stopped reporting gets the date its record ends.
+  const partialLabel = thisYear === new Date().getFullYear() ? "so far"
+    : `through ${new Date(`${latest}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  const yearOpts = years.map((y) => [y, y === thisYear && latest.slice(5) !== "12-31" ? `${y} (${partialLabel})` : String(y)]);
   const startYear = years.includes(Number(year)) ? Number(year) : thisYear;
   const state = { tYear: startYear, pYear: startYear,
     sSeason: seasons.includes(Number(year) - 1) ? Number(year) - 1 : (latestSnowSeason ?? seasons[0]) };

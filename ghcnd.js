@@ -31,7 +31,9 @@ export const ELEMENTS = {
   TAVG: { scale: 0.1, units: "degC", description: "Average temperature (sparse in the US)" },
 };
 
-const STATION_RE = /^[A-Z0-9]{11}$/;
+// 11 characters; most are upper-case letters and digits, but some carry a
+// hyphen (Brazil's BR00E3-0520) or lower case (Nebraska's US10adam002).
+const STATION_RE = /^[A-Za-z0-9_-]{11}$/;
 
 export class ToolError extends Error {}
 
@@ -120,6 +122,13 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   for (const [el, e] of Object.entries(ELEMENTS)) {
     await q(`INSERT INTO elements VALUES (${sqlString(el)}, ${sqlString(e.units)}, ${sqlString(e.description)})`);
   }
+  // IDs are matched without regard to case: the few with lower case, by their
+  // upper-case form.
+  const idCase = new Map(toRows(await q("SELECT DISTINCT id FROM stations WHERE id <> upper(id)")).map((r) => [r.id.toUpperCase(), r.id]));
+  const canonId = (x) => {
+    const u = String(x ?? "").trim().toUpperCase();
+    return idCase.get(u) || u;
+  };
   const loaded = new Map(); // "STATION/ELEMENT" -> summary, for the side rail
 
   // ---- S3 helpers ---------------------------------------------------------
@@ -379,7 +388,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       }
     }
     if (Array.isArray(ids) && ids.length) {
-      const list = ids.map((x) => String(x).trim().toUpperCase()).filter((x) => STATION_RE.test(x));
+      const list = ids.map(canonId).filter((x) => STATION_RE.test(x));
       if (!list.length) throw new ToolError("stations must be 11-character station IDs.");
       where.push(`s.id IN (${list.map(sqlString).join(", ")})`);
       labels.push(`${list.length} listed stations`);
@@ -440,7 +449,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     if (query) {
       const term = String(query).trim().toUpperCase();
       const toks = nameTokens(term);
-      where.push(STATION_RE.test(term) ? `s.id = ${sqlString(term)}`
+      where.push(STATION_RE.test(term) && /\d/.test(term) ? `(upper(s.id) = ${sqlString(term)} OR s.name ILIKE ${sqlString("%" + term + "%")})`
         : toks.length ? `(s.name ILIKE ${sqlString("%" + term + "%")} OR (${nameClause(toks)}))` : `s.name ILIKE ${sqlString("%" + term + "%")}`);
     }
     if (element) {
@@ -507,7 +516,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     const mdFilter = mdList.length
       ? `WHERE ${mdList.map((x) => (x.length === 2 ? `substr(DATE, 5, 2) = '${x}'` : `substr(DATE, 5, 4) = '${x.replace("-", "")}'`)).join(" OR ")}`
       : "";
-    const id = String(station || "").trim().toUpperCase();
+    const id = canonId(station);
     if (!STATION_RE.test(id)) throw new ToolError(`"${station}" is not a GHCN-Daily station ID (11 characters).`);
     const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
     for (const el of els) {
@@ -855,7 +864,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   async function loadSeriesMany({ stations: ids, elements, start_year, end_year, min_years, daily, month_days, ...areaArgs } = {}) {
     const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
     for (const el of els) if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${el}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
-    let list = Array.isArray(ids) ? ids.map((x) => String(x).trim().toUpperCase()).filter((x) => STATION_RE.test(x)) : [];
+    let list = Array.isArray(ids) ? ids.map(canonId).filter((x) => STATION_RE.test(x)) : [];
     let label = `${list.length} listed stations`;
     if (!list.length) {
       const area = await resolveArea(areaArgs);
@@ -977,7 +986,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   // obs under the requested station and are listed in table substituted,
   // so pages can mark them. Only past days (before today) are filled.
   async function fillNeighbors({ station, elements = ["TMAX", "TMIN", "PRCP"], start_date, end_date, max_km = 40 } = {}) {
-    const id = String(station || "").toUpperCase();
+    const id = canonId(station);
     const els = elements.filter((e) => ACIS_ELEMS[e]);
     const today = new Date().toLocaleDateString("en-CA");
     const end = end_date && end_date < today ? end_date : new Date(Date.parse(`${today}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
@@ -1304,7 +1313,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     let label;
     let stationRow = null;
     if (station) {
-      const id = String(station).trim().toUpperCase();
+      const id = canonId(station);
       if (!STATION_RE.test(id)) throw new ToolError(`"${station}" is not a GHCN-Daily station ID.`);
       stationRow = toRows(await q(`SELECT id, name, state, lat, lon, elev_m FROM stations WHERE id = ${sqlString(id)}`))[0];
       if (!stationRow) throw new ToolError(`Station ${id} is not in the station index.`);
@@ -1486,6 +1495,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     getForecast,
     // Unguarded SQL for the page's own code (the almanac); never exposed to the model.
     sql: async (text) => toRows(await q(text)),
+    canonId,
     runSql,
     select,
     stats: () => ({ ...stats }),

@@ -8,7 +8,7 @@
 
 const NORMALS_DAILY = "https://www.ncei.noaa.gov/data/normals-daily/1991-2020/access/";
 const NORMALS_ANNUAL = "https://www.ncei.noaa.gov/data/normals-annualseasonal/1991-2020/access/";
-const STATION_RE = /^[A-Z0-9]{11}$/;
+const STATION_RE = /^[A-Za-z0-9_-]{11}$/;
 const COLORS = {
   warm: "#c84113", cool: "#1d58a7", warmLight: "#e8a48c", coolLight: "#98afd2",
   normal: "#707372", precip: "#009fd4", precipLight: "#8dd1eb", ink: "#13294b",
@@ -179,7 +179,10 @@ export async function findNearby(input) {
 export async function resolveStation(g, input) {
   const text = String(input || "").trim();
   if (!text) throw new Error("Enter a station name, a place (e.g., Champaign, IL) or a GHCN-Daily ID.");
-  const id = STATION_RE.test(text.toUpperCase()) ? text.toUpperCase() : (await findNearby(text)).recommended;
+  // A station ID (any case), else a place or a station's name.
+  const asId = STATION_RE.test(text) && /\d/.test(text)
+    ? (await g.sql(`SELECT id FROM stations WHERE upper(id) = ${sq(text.toUpperCase())} LIMIT 1`))[0]?.id : null;
+  const id = asId || (await findNearby(text)).recommended;
   const row = (await g.sql(`SELECT * FROM stations WHERE id = ${sq(id)}`))[0];
   if (!row) throw new Error(`${id} is not a GHCN-Daily station ID.`);
   return row;
