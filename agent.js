@@ -22,6 +22,7 @@ How to work:
 
 Tables:
 - stations(id, name, state, county, county_fips, country, lat, lon, elev_m) — country is the 2-letter FIPS prefix of the ID; county and county_fips are the US county
+- km(lat1, lon1, lat2, lon2) is the great-circle distance in km, e.g., WHERE km(s.lat, s.lon, 42.33, -83.05) <= 48. But for stations in an area with a record length, call find_stations (place, radius_km, min_years, current, limit up to 50) instead of writing SQL.
 - coverage(id, element, first_year, last_year)
 - elements(element, units, description)
 - obs(station, element, date DATE, value DOUBLE, m_flag, obs_time) — only what load_series and load_area have loaded; values that failed NOAA quality control are already removed; join stations on obs.station = stations.id for names
@@ -83,7 +84,8 @@ export const TOOL_SCHEMAS = [
           lon: { type: "number" },
           radius_km: { type: "number", description: "Search radius around lat/lon; default 50" },
           element: { type: "string", enum: ["PRCP", "SNOW", "SNWD", "TMAX", "TMIN", "TAVG"], description: "Only stations that report this element" },
-          min_years: { type: "number", description: "Minimum period of record in years for the element" },
+          min_years: { type: "number", description: "Minimum period of record in years (for element if given, else in any element)" },
+          current: { type: "boolean", description: "Only stations still reporting (data this year or last)" },
           limit: { type: "number", description: "Maximum stations to return (default 10, max 50)" },
         },
       },

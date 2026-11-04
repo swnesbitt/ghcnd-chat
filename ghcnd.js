@@ -114,6 +114,8 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     CREATE TABLE obs_monthly (station VARCHAR, element VARCHAR, year INTEGER, month INTEGER, days INTEGER, mean DOUBLE, total DOUBLE, min DOUBLE, max DOUBLE);
     CREATE TABLE substituted (station VARCHAR, element VARCHAR, date DATE, source VARCHAR, source_name VARCHAR, distance_km DOUBLE);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
+    CREATE MACRO km(lat1, lon1, lat2, lon2) AS
+      2 * 6371 * asin(sqrt(pow(sin(radians(lat2 - lat1) / 2), 2) + cos(radians(lat1)) * cos(radians(lat2)) * pow(sin(radians(lon2 - lon1) / 2), 2)));
   `);
   for (const [el, e] of Object.entries(ELEMENTS)) {
     await q(`INSERT INTO elements VALUES (${sqlString(el)}, ${sqlString(e.units)}, ${sqlString(e.description)})`);
@@ -432,7 +434,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     return rows;
   }
 
-  async function findStations({ query, element, min_years, limit = 10, ...areaArgs } = {}) {
+  async function findStations({ query, element, min_years, current, limit = 10, ...areaArgs } = {}) {
     const area = await resolveArea(areaArgs);
     const where = [...area.where];
     if (query) {
@@ -446,7 +448,11 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${element}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
       const minY = Number.isFinite(min_years) ? Math.max(0, Math.floor(min_years)) : 0;
       where.push(`EXISTS (SELECT 1 FROM coverage c WHERE c.id = s.id AND c.element = ${sqlString(el)}
-                  AND c.last_year - c.first_year + 1 >= ${minY})`);
+                  AND c.last_year - c.first_year + 1 >= ${minY}${current ? ` AND c.last_year >= ${new Date().getUTCFullYear() - 1}` : ""})`);
+    } else if (Number.isFinite(min_years) || current) {
+      // Without an element: a record that long (or still reporting) in any element.
+      const minY = Number.isFinite(min_years) ? Math.max(0, Math.floor(min_years)) : 0;
+      where.push(`EXISTS (SELECT 1 FROM coverage c WHERE c.id = s.id AND c.last_year - c.first_year + 1 >= ${minY}${current ? ` AND c.last_year >= ${new Date().getUTCFullYear() - 1}` : ""})`);
     }
     if (!where.length) throw new ToolError("Give a name, station ID, state, county, country, place, or lat/lon.");
     const n = Math.min(Math.max(1, Math.floor(limit) || 10), 50);
