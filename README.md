@@ -126,6 +126,18 @@ beyond 40 stations each station is reduced to monthly summaries in
 `obs_monthly` as it loads, so a century of daily data at 150 stations (7
 million rows) stays small in the browser.
 
+The `by_year` files hold every station for about 40 days each (500,000 rows,
+sorted by date), so `load_area` reads them lazily: for each file it fetches the
+footer and the DATE column with HTTP range requests (a few kB), learns which
+days the file covers, and downloads only the files covering the dates asked
+for. A statewide question about one day reads one 1.7 MB file per element
+instead of the whole year (15–30 MB). `load_area` also takes `month_days` with
+`start_year` and `end_year` for the same dates in every year: July 4 at every US
+station for 1996–2025 is 64 files, 160 MB and about 40 seconds. (The bucket
+answers range requests but does not expose `Content-Range` to browsers, so
+DuckDB-WASM's own HTTP reader would download whole files; the page reads the
+ranges itself and gives DuckDB a buffer holding only those bytes.)
+
 GHCN-Daily runs a few days behind. For US stations, `load_series` then fills
 the newest days from ACIS, the NOAA Regional Climate Centers' database
 (`data.rcc-acis.org`, which accepts GHCN-Daily IDs and allows browser

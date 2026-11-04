@@ -11,7 +11,7 @@ How to work:
    For the climate, records or trends of a town or city ("the wettest years at Champaign-Urbana"), use its long-term station, not the nearest gauge: search by place (radius_km 30) and use the result's long_term_station, the current station with the longest record (most nearby stations are short-record CoCoRaHS gauges, IDs starting US1). If there is none, widen the radius or list the longest records and ask. Tell the user which station you used and its period of record. Twin-city names ("Champaign-Urbana") resolve to the first city.
 2. Load data into the table obs:
    - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
-   - load_series for long records: one station, a list, or every station in an area with min_years (trends, climatologies, records at a site, or a region's history such as "the mean temperature of Indiana from all stations with more than 20 years": load_series { state: "IN", min_years: 20, elements: ["TMAX", "TMIN"] }). load_area cannot do multi-year questions; never call it for them. For one calendar day or month across many years ("July 4 at every station with 30 years"), add month_days: ["07-04"] so only those days load, as daily rows in obs.
+   - load_series for long records: one station, a list, or every station in an area with min_years (trends, climatologies, records at a site, or a region's history such as "the mean temperature of Indiana from all stations with more than 20 years": load_series { state: "IN", min_years: 20, elements: ["TMAX", "TMIN"] }). A calendar day across many years at every station in an area ("the mean July 4 temperature at all stations that reported for the last 30 years") is load_area with month_days and start_year/end_year: it covers every station, current or not, at about 1.7 MB per element and date; then keep stations with nearly every year in SQL. For whole multi-year records at stations (trends, climatologies) use load_series; for a calendar day at the stations of a load_series area, load_series also takes month_days.
    For a regional time series from many stations, the network changes over time: compute each station's annual mean only for years with at least 90% of days, convert to an anomaly from that station's own 1991-2020 mean, average the anomalies across stations by year, and report the number of stations per year (and the regional 1991-2020 mean if the user wants absolute values). Say what you did.
    - get_forecast for the National Weather Service forecast (about 7 days) at a station, place or point (US only). It fills table forecast with daily TMAX, TMIN, PRCP, SNOW in obs units plus POP (%) and GUST (km/h), and returns the NWS text forecast. To put a forecast in context, compare it with the station's records (load_records) or its history for those calendar days (load_series).
    - load_records for record extremes over an area or a long period ("the most snow in a day in New York", "the coldest February temperature in Illinois"): it loads precomputed all-time and monthly records for every station in the area, so no raw data is needed.
@@ -122,7 +122,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "load_area",
       description:
-        "Load every station in an area for a period of up to one year (366 days from start_date to end_date) into table obs, from NOAA's files that hold all stations for an element-year. The area is a place with radius_km ('Peoria, IL', 50), a lat/lon with radius_km, a state, a US county with its state, a country, or a list of station IDs. Use this for 'highest/lowest/most in <area> on <date>' and other many-station questions.",
+        "Load every station in an area into table obs, either for a period of up to one year (start_date to end_date, at most 366 days) or for the same calendar days in every year (month_days with start_year and end_year, at most 400 dates), e.g., July 4 at every US station for 30 years: { country: 'US', month_days: ['07-04'], start_year: 1996, end_year: 2025, elements: ['TMAX', 'TMIN'] }. Only the NOAA files covering those dates are downloaded (about 1.7 MB per element and date), from NOAA's files that hold all stations for an element-year. The area is a place with radius_km ('Peoria, IL', 50), a lat/lon with radius_km, a state, a US county with its state, a country, or a list of station IDs. Use this for 'highest/lowest/most in <area> on <date>' and other many-station questions.",
       parameters: {
         type: "object",
         properties: {
@@ -140,8 +140,11 @@ export const TOOL_SCHEMAS = [
           },
           start_date: { type: "string", description: "YYYY-MM-DD" },
           end_date: { type: "string", description: "YYYY-MM-DD; defaults to start_date" },
+          month_days: { type: "array", items: { type: "string" }, description: "Instead of a period: calendar days 'MM-DD' to load in every year from start_year to end_year" },
+          start_year: { type: "number" },
+          end_year: { type: "number" },
         },
-        required: ["elements", "start_date"],
+        required: ["elements"],
       },
     },
   },
@@ -297,7 +300,7 @@ export async function runTurn({ lumen, model, messages, handlers, onStep = () =>
       if (args === null) {
         result = { error: "Arguments were not valid JSON." };
       } else if (repeats > 1 && name !== "run_sql" && name !== "make_chart") {
-        result = { error: `You already called ${name} with exactly these arguments in this turn; its result is above and has not changed. Do not call it again: use run_sql on what is loaded, or call a tool with different arguments (for many years at many stations, load_series with an area and min_years).` };
+        result = { error: `You already called ${name} with exactly these arguments in this turn; its result is above and has not changed. Do not call it again: use run_sql on what is loaded, or call a tool with different arguments (for many years at many stations, load_series with an area and min_years; for the same dates over many years, load_area with month_days, start_year and end_year).` };
       } else if (!handlers[name]) {
         result = { error: `Unknown tool ${name}.` };
       } else {

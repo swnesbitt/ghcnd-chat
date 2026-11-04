@@ -172,6 +172,81 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     return registered.get(key);
   }
 
+  // Lazy reads of by_year files. Each holds every station for about 40 days
+  // (500,000 rows, sorted by date), so a question about a few dates needs only
+  // the files that cover them. A file's date range comes from its footer and
+  // its DATE column, fetched with HTTP range requests (a few kB): the bytes go
+  // into an otherwise empty buffer of the file's size, which DuckDB reads
+  // as a parquet file without touching the other columns. (The bucket answers
+  // range requests but does not expose Content-Range to browsers, so DuckDB's
+  // own HTTP reader would download whole files.)
+  const dateRanges = new Map();
+  async function rangeBytes(key, from, to) {
+    const resp = await fetch(`${CONFIG.bucket}/${key}`, { headers: { Range: `bytes=${from}-${to}` } });
+    if (resp.status !== 206) throw new Error(`range request returned ${resp.status}`);
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    stats.bytes += buf.byteLength;
+    return buf;
+  }
+  let lazySeq = 0;
+  function fileDateRange(f) {
+    if (registeredRange(f.key)) return registeredRange(f.key);
+    if (!dateRanges.has(f.key)) {
+      const p = (async () => {
+        const size = f.size;
+        const tailLen = Math.min(size, 65536);
+        const buf = new Uint8Array(size);
+        buf.set(await rangeBytes(f.key, size - tailLen, size - 1), size - tailLen);
+        const footLen = new DataView(buf.buffer).getUint32(size - 8, true);
+        if (footLen + 8 > tailLen) {
+          const from = size - 8 - footLen;
+          buf.set(await rangeBytes(f.key, from, size - tailLen - 1), from);
+        }
+        const name = `lazy_${++lazySeq}.parquet`;
+        await db.registerFileBuffer(name, buf.slice());
+        const chunks = toRows(await q(`
+          SELECT data_page_offset AS d, dictionary_page_offset AS dict, total_compressed_size AS n
+          FROM parquet_metadata('${name}') WHERE path_in_schema = 'DATE'`));
+        for (const c of chunks) {
+          const off = Math.min(c.d, c.dict ?? c.d);
+          buf.set(await rangeBytes(f.key, off, off + c.n - 1), off);
+        }
+        await db.dropFile(name);
+        await db.registerFileBuffer(name, buf);
+        const r = toRows(await q(`SELECT min(DATE) AS lo, max(DATE) AS hi FROM read_parquet('${name}')`))[0];
+        await db.dropFile(name);
+        return { lo: r.lo, hi: r.hi };
+      })();
+      p.catch(() => dateRanges.delete(f.key));
+      dateRanges.set(f.key, p);
+    }
+    return dateRanges.get(f.key);
+  }
+  // A file already downloaded whole can answer from its own data.
+  function registeredRange(key) {
+    if (!registered.has(key) || dateRanges.has(key)) return dateRanges.get(key) || null;
+    const p = registered.get(key).then(async (name) => toRows(await q(`SELECT min(DATE) AS lo, max(DATE) AS hi FROM read_parquet('${name}')`))[0]);
+    dateRanges.set(key, p);
+    return p;
+  }
+  // The files among `files` whose dates overlap any of the [lo, hi] spans (YYYYMMDD).
+  async function filesForDates(files, spans, limit = 8) {
+    const keep = new Array(files.length).fill(true);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(limit, files.length) }, async () => {
+      while (next < files.length) {
+        const i = next++;
+        try {
+          const r = await fileDateRange(files[i]);
+          keep[i] = spans.some(([lo, hi]) => r.lo <= hi && r.hi >= lo);
+        } catch {
+          keep[i] = true; // could not read the footer: download it whole
+        }
+      }
+    }));
+    return files.filter((_, i) => keep[i]);
+  }
+
   async function fetchAll(keys, limit = 4) {
     const names = new Array(keys.length);
     let next = 0;
@@ -849,15 +924,37 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
   const MAX_AREA_DAYS = 366;
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-  async function loadArea({ state, country, county, place, lat, lon, radius_km, stations: ids, elements, start_date, end_date } = {}) {
-    const start = String(start_date || "").trim();
-    const end = String(end_date || start).trim();
-    if (!DATE_RE.test(start) || !DATE_RE.test(end)) throw new ToolError("start_date and end_date must be YYYY-MM-DD.");
-    if (end < start) throw new ToolError("end_date is before start_date.");
-    const days = (Date.parse(end) - Date.parse(start)) / 864e5 + 1;
-    if (days > MAX_AREA_DAYS) {
-      throw new ToolError(`load_area covers at most ${MAX_AREA_DAYS} days; for long records at a few stations use load_series.`);
+  async function loadArea({ state, country, county, place, lat, lon, radius_km, stations: ids, elements, start_date, end_date, month_days, start_year, end_year } = {}) {
+    // Two forms: a period of up to a year (start_date, end_date), or the same
+    // calendar days in every year from start_year to end_year (month_days).
+    const mds = (Array.isArray(month_days) ? month_days : month_days ? [month_days] : []).map((x) => String(x).trim()).filter((x) => /^\d{2}-\d{2}$/.test(x));
+    let start;
+    let end;
+    let days;
+    let dateList = null;
+    if (mds.length) {
+      const ya = Math.floor(Number(start_year));
+      const yb = Math.floor(Number(end_year ?? start_year));
+      if (!Number.isFinite(ya) || !Number.isFinite(yb) || yb < ya) throw new ToolError("With month_days, give start_year and end_year.");
+      if ((yb - ya + 1) * mds.length > 400) throw new ToolError("At most 400 dates per call (years × month_days).");
+      dateList = [];
+      for (let y = ya; y <= yb; y++) for (const m of mds) if (m !== "02-29" || (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0))) dateList.push(`${y}-${m}`);
+      dateList.sort();
+      start = dateList[0];
+      end = dateList[dateList.length - 1];
+      days = dateList.length;
+    } else {
+      start = String(start_date || "").trim();
+      end = String(end_date || start).trim();
+      if (!DATE_RE.test(start) || !DATE_RE.test(end)) throw new ToolError("start_date and end_date must be YYYY-MM-DD (or give month_days with start_year and end_year).");
+      if (end < start) throw new ToolError("end_date is before start_date.");
+      days = (Date.parse(end) - Date.parse(start)) / 864e5 + 1;
+      if (days > MAX_AREA_DAYS) {
+        throw new ToolError(`load_area covers at most ${MAX_AREA_DAYS} days in one period; for the same dates over many years use month_days with start_year and end_year, and for long records at stations use load_series.`);
+      }
     }
+    const spans = dateList ? dateList.map((d) => [d.replace(/-/g, ""), d.replace(/-/g, "")]) : [[start.replace(/-/g, ""), end.replace(/-/g, "")]];
+    const dateWhere = dateList ? `DATE IN (${dateList.map((d) => `'${d.replace(/-/g, "")}'`).join(", ")})` : null;
     const els = (Array.isArray(elements) && elements.length ? elements : ["TMAX"]).map((e) => String(e).toUpperCase());
     for (const el of els) {
       if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${el}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
@@ -876,12 +973,20 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     const y1 = Number(end.slice(0, 4));
     let bytes = 0;
     const plan = [];
+    const years = [...new Set(spans.flatMap(([a, b]) => [Number(a.slice(0, 4)), Number(b.slice(0, 4))]))];
+    for (let y = y0; y <= y1; y++) if (!dateList) years.push(y);
     for (const el of els) {
       const files = [];
-      for (let y = y0; y <= y1; y++) files.push(...(await listParquet(`parquet/by_year/YEAR=${y}/ELEMENT=${el}/`)));
+      for (const y of [...new Set(years)].sort()) {
+        onActivity({ kind: "status", text: `Finding the ${el} files for ${y}` });
+        const all = await listParquet(`parquet/by_year/YEAR=${y}/ELEMENT=${el}/`);
+        // Only the files covering the dates asked for (lazy: a few kB each to find out).
+        files.push(...(dateList || days <= 120 ? await filesForDates(all, spans) : all));
+      }
       bytes += files.filter((f) => !registered.has(f.key)).reduce((a, f) => a + f.size, 0);
       plan.push({ el, files });
     }
+    onActivity({ kind: "status", text: "" });
     if (bytes / 1e6 > CONFIG.maxDownloadMBPerCall) {
       throw new ToolError(`This would download about ${Math.round(bytes / 1e6)} MB (limit ${CONFIG.maxDownloadMBPerCall} MB per call). Use fewer elements or a shorter period.`);
     }
@@ -898,8 +1003,8 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       await q(`
         CREATE OR REPLACE TEMP TABLE _raw AS
           SELECT ${RAW_COLS} FROM read_parquet(${fileList(names)}, hive_partitioning = false)
-          WHERE DATE BETWEEN '${lo}' AND '${hi}' AND ID IN (SELECT id FROM _area);
-        DELETE FROM obs WHERE element = ${sqlString(el)} AND date BETWEEN DATE '${start}' AND DATE '${end}'
+          WHERE ${dateWhere || `DATE BETWEEN '${lo}' AND '${hi}'`} AND ID IN (SELECT id FROM _area);
+        DELETE FROM obs WHERE element = ${sqlString(el)} AND ${dateList ? `strftime(date, '%Y-%m-%d') IN (${dateList.map(sqlString).join(", ")})` : `date BETWEEN DATE '${start}' AND DATE '${end}'`}
           AND station IN (SELECT id FROM _area);
         INSERT INTO obs
           SELECT ID, ${sqlString(el)}, strptime(DATE, '%Y%m%d')::DATE, round(DATA_VALUE::DOUBLE * ${ELEMENTS[el].scale}, 1), M_FLAG, OBS_TIME
@@ -941,6 +1046,8 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       stations_in_index: nArea,
       start_date: start,
       end_date: end,
+      dates: dateList ? `${dateList.length} dates (${mds.join(", ")} in ${start.slice(0, 4)}-${end.slice(0, 4)})` : undefined,
+      files_read: plan.reduce((a, x) => a + x.files.length, 0),
       results,
       downloaded_mb_this_session: Math.round(stats.bytes / 1e5) / 10,
       table: "obs(station, element, date, value, m_flag, obs_time); join stations for names",
