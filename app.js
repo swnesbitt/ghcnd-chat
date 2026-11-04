@@ -822,7 +822,7 @@ async function ask(text) {
     const g = await startData();
     const handlers = {
       find_stations: (a) => g.findStations(a),
-      load_series: (a) => g.loadSeries(a),
+      load_series: (a) => (a.station && !Array.isArray(a.stations) ? g.loadSeries(a) : g.loadSeriesMany(a)),
       load_area: (a) => g.loadArea(a),
       load_records: (a) => g.loadRecords(a),
       get_forecast: (a) => g.getForecast(a),

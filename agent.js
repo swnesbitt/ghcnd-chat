@@ -11,10 +11,11 @@ How to work:
    For the climate, records or trends of a town or city ("the wettest years at Champaign-Urbana"), use its long-term station, not the nearest gauge: search by place (radius_km 30) and use the result's long_term_station, the current station with the longest record (most nearby stations are short-record CoCoRaHS gauges, IDs starting US1). If there is none, widen the radius or list the longest records and ask. Tell the user which station you used and its period of record. Twin-city names ("Champaign-Urbana") resolve to the first city.
 2. Load data into the table obs:
    - load_area for questions across many stations over a day or a short period ("the highest temperature in Illinois on 4/5/1974", "rain totals near Peoria last week"). It loads every station in a state, country or radius at once. Never answer an extreme for a state or region from a handful of stations.
-   - load_series for long records at one or a few stations (trends, climatologies, records at a site).
+   - load_series for long records: one station, a list, or every station in an area with min_years (trends, climatologies, records at a site, or a region's history such as "the mean temperature of Indiana from all stations with more than 20 years": load_series { state: "IN", min_years: 20, elements: ["TMAX", "TMIN"] }). load_area cannot do multi-year questions; never call it for them.
+   For a regional time series from many stations, the network changes over time: compute each station's annual mean only for years with at least 90% of days, convert to an anomaly from that station's own 1991-2020 mean, average the anomalies across stations by year, and report the number of stations per year (and the regional 1991-2020 mean if the user wants absolute values). Say what you did.
    - get_forecast for the National Weather Service forecast (about 7 days) at a station, place or point (US only). It fills table forecast with daily TMAX, TMIN, PRCP, SNOW in obs units plus POP (%) and GUST (km/h), and returns the NWS text forecast. To put a forecast in context, compare it with the station's records (load_records) or its history for those calendar days (load_series).
    - load_records for record extremes over an area or a long period ("the most snow in a day in New York", "the coldest February temperature in Illinois"): it loads precomputed all-time and monthly records for every station in the area, so no raw data is needed.
-3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows.
+3. run_sql to compute. Aggregate in SQL and return small results; never dump raw daily rows. A tool result does not change if you call it again with the same arguments: when a load succeeded, go on to run_sql; when a result is not what you need, change the arguments or the approach.
 4. make_chart when a picture helps, with a Vega-Lite spec. For US maps, set basemap (state or county outlines, optionally zoomed to one state) and plot stations with longitude/latitude encodings, or color counties or states with basemap.color_by. The data comes from the chart's own SQL; do not put data or URLs in the spec.
 
 Tables:
@@ -22,6 +23,7 @@ Tables:
 - coverage(id, element, first_year, last_year)
 - elements(element, units, description)
 - obs(station, element, date DATE, value DOUBLE, m_flag, obs_time) — only what load_series and load_area have loaded; values that failed NOAA quality control are already removed; join stations on obs.station = stations.id for names
+- obs_monthly(station, element, year, month, days, mean, total, min, max) — monthly summaries from load_series over more than 40 stations (daily rows are dropped then, to save memory; set daily: true to keep them for fewer than about 100 stations). Monthly mean temperature is (TMAX mean + TMIN mean) / 2 from months where both have nearly every day.
 
 Data rules:
 - Units in obs: PRCP, SNOW, SNWD in mm; TMAX, TMIN, TAVG in °C. For US stations, answer in °F and inches with the metric value in parentheses, e.g. 99 °F (37.2 °C); elsewhere answer in metric, unless the user asks otherwise.
@@ -88,11 +90,21 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "load_series",
       description:
-        "Load daily observations for one station into table obs (replacing earlier loads of the same station and element). History comes from small per-station files; recent years need whole element-year files, so long requests for stations without per-station files can be refused.",
+        "Load long daily records into table obs (replacing earlier loads of the same station and element): one station (station), a list (stations), or every station in an area whose record spans at least min_years (state, county with state, country, place or lat/lon with radius_km; up to 300 stations). Use the area form for multi-decade questions over a region, e.g., the history of Indiana's mean temperature: { state: 'IN', min_years: 30, elements: ['TMAX', 'TMIN'] }. History comes from small per-station files; recent years need whole element-year files, so long requests for stations without per-station files can be refused.",
       parameters: {
         type: "object",
         properties: {
           station: { type: "string", description: "11-character station ID from find_stations" },
+          stations: { type: "array", items: { type: "string" }, description: "Several station IDs" },
+          state: { type: "string", description: "Every qualifying station in a US state (or Canadian province) code, e.g., 'IN'" },
+          county: { type: "string", description: "US county name, with state" },
+          country: { type: "string", description: "2-letter FIPS country code" },
+          place: { type: "string", description: "Town with state or country; use with radius_km" },
+          lat: { type: "number" },
+          lon: { type: "number" },
+          radius_km: { type: "number" },
+          min_years: { type: "number", description: "With an area: only stations whose record for every requested element spans at least this many years" },
+          daily: { type: "boolean", description: "Keep daily rows for many stations; by default over 40 stations are reduced to monthly summaries (obs_monthly)" },
           elements: {
             type: "array",
             items: { type: "string", enum: ["PRCP", "SNOW", "SNWD", "TMAX", "TMIN", "TAVG"] },
@@ -101,7 +113,6 @@ export const TOOL_SCHEMAS = [
           start_year: { type: "number" },
           end_year: { type: "number" },
         },
-        required: ["station"],
       },
     },
   },
@@ -110,7 +121,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "load_area",
       description:
-        "Load every station in an area for a period of up to one year into table obs, from NOAA's files that hold all stations for an element-year. The area is a place with radius_km ('Peoria, IL', 50), a lat/lon with radius_km, a state, a US county with its state, a country, or a list of station IDs. Use this for 'highest/lowest/most in <area> on <date>' and other many-station questions.",
+        "Load every station in an area for a period of up to one year (366 days from start_date to end_date) into table obs, from NOAA's files that hold all stations for an element-year. The area is a place with radius_km ('Peoria, IL', 50), a lat/lon with radius_km, a state, a US county with its state, a country, or a list of station IDs. Use this for 'highest/lowest/most in <area> on <date>' and other many-station questions.",
       parameters: {
         type: "object",
         properties: {
@@ -245,6 +256,7 @@ function clip(text, max = 16000) {
  * @returns {Promise<string>} the assistant's final text
  */
 export async function runTurn({ lumen, model, messages, handlers, onStep = () => {}, signal }) {
+  const seen = new Map(); // identical calls this turn, so a model stuck repeating itself is told so
   for (let step = 0; step < CONFIG.maxToolSteps; step++) {
     onStep({ type: "thinking" });
     const resp = await lumen.api("/v1/chat/completions", {
@@ -275,8 +287,16 @@ export async function runTurn({ lumen, model, messages, handlers, onStep = () =>
         args = null;
       }
       onStep({ type: "tool_start", id: call.id, name, args });
+      const sig = `${name}:${JSON.stringify(args)}`;
+      const repeats = (seen.get(sig) || 0) + 1;
+      seen.set(sig, repeats);
+      if (repeats >= 4) {
+        throw new Error(`The model kept repeating the same ${name} call without making progress. Try rephrasing the question, e.g., name the stations, years and statistic you want.`);
+      }
       if (args === null) {
         result = { error: "Arguments were not valid JSON." };
+      } else if (repeats > 1 && name !== "run_sql" && name !== "make_chart") {
+        result = { error: `You already called ${name} with exactly these arguments in this turn; its result is above and has not changed. Do not call it again: use run_sql on what is loaded, or call a tool with different arguments (for many years at many stations, load_series with an area and min_years).` };
       } else if (!handlers[name]) {
         result = { error: `Unknown tool ${name}.` };
       } else {

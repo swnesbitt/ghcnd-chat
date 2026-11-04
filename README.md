@@ -116,6 +116,16 @@ others (Chicago O'Hare, `USW00094846`). `load_series` therefore:
    which can happen for stations with no `by_station` files, and tells the model
    to narrow the period.
 
+`load_series` also takes an area (a state, county, place or lat/lon with
+`radius_km`) with `min_years`, or a list of stations, for regional histories:
+"Indiana's mean temperature from every station with 20+ years" loads 167
+stations in about 30 seconds and 100 MB. Their per-station files are
+downloaded six at a time, then loaded one at a time; only the last two years
+come from `by_year` files (shared by all stations), older gaps are left; and
+beyond 40 stations each station is reduced to monthly summaries in
+`obs_monthly` as it loads, so a century of daily data at 150 stations (7
+million rows) stays small in the browser.
+
 GHCN-Daily runs a few days behind. For US stations, `load_series` then fills
 the newest days from ACIS, the NOAA Regional Climate Centers' database
 (`data.rcc-acis.org`, which accepts GHCN-Daily IDs and allows browser

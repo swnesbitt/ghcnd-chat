@@ -110,6 +110,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       FROM 'station_index.parquet';
     CREATE TABLE obs (station VARCHAR, element VARCHAR, date DATE, value DOUBLE, m_flag VARCHAR, obs_time VARCHAR);
     CREATE TABLE provisional (station VARCHAR, element VARCHAR, date DATE);
+    CREATE TABLE obs_monthly (station VARCHAR, element VARCHAR, year INTEGER, month INTEGER, days INTEGER, mean DOUBLE, total DOUBLE, min DOUBLE, max DOUBLE);
     CREATE TABLE substituted (station VARCHAR, element VARCHAR, date DATE, source VARCHAR, source_name VARCHAR, distance_km DOUBLE);
     CREATE TABLE elements (element VARCHAR, units VARCHAR, description VARCHAR);
   `);
@@ -120,7 +121,18 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
 
   // ---- S3 helpers ---------------------------------------------------------
 
-  async function listParquet(prefix) {
+  // Listings are cached for the session, so a station listed while prefetching
+  // is not listed again when it loads.
+  const listings = new Map();
+  function listParquet(prefix) {
+    if (!listings.has(prefix)) {
+      const p = listParquetNow(prefix);
+      listings.set(prefix, p);
+      p.catch(() => listings.delete(prefix));
+    }
+    return listings.get(prefix);
+  }
+  async function listParquetNow(prefix) {
     const out = [];
     let token = null;
     do {
@@ -396,7 +408,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     };
   }
 
-  async function loadSeries({ station, elements, start_year, end_year } = {}) {
+  async function loadSeries({ station, elements, start_year, end_year, recent: fillRecentDays = true, tail_min_year: tailMin = -Infinity } = {}) {
     const id = String(station || "").trim().toUpperCase();
     if (!STATION_RE.test(id)) throw new ToolError(`"${station}" is not a GHCN-Daily station ID (11 characters).`);
     const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
@@ -443,7 +455,15 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
       const fromYear = p.historyLast ? Math.max(p.y0, Number(p.historyLast.slice(0, 4))) : p.y0;
       p.tail = [];
       if (!p.historyLast || (p.historyLast < `${p.y1}1231` && p.historyLast < recent)) {
-        for (let y = fromYear; y <= p.y1; y++) {
+        // Loading many stations: each by_year element-year holds every station
+        // (15-30 MB), so only the recent years that stale per-station files
+        // miss are filled (shared by all stations); older gaps are left.
+        if (p.y1 < tailMin) {
+          p.tailSkipped = `${fromYear}-${p.y1} not loaded (per-station files end ${p.historyLast || "before"}; would need whole by_year files)`;
+          continue;
+        }
+        if (fromYear < tailMin) p.tailSkipped = `${fromYear}-${tailMin - 1} not loaded (would need whole by_year files)`;
+        for (let y = Math.max(fromYear, tailMin); y <= p.y1; y++) {
           const files = await listParquet(`parquet/by_year/YEAR=${y}/ELEMENT=${p.el}/`);
           const fresh = files.filter((f) => !registered.has(f.key));
           tailBytes += fresh.reduce((s, f) => s + f.size, 0);
@@ -479,6 +499,10 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         parts.push(`SELECT ${RAW_COLS} FROM read_parquet(${fileList(names)}, hive_partitioning = false)
                     WHERE ID = ${sqlString(id)} AND DATE BETWEEN '${lo}' AND '${hi}' ${after}`);
       }
+      if (!parts.length) {
+        summaries.push({ element: p.el, loaded: false, reason: p.tailSkipped || `${id} has no ${p.el} files` });
+        continue;
+      }
       const scale = ELEMENTS[p.el].scale;
       await q(`DELETE FROM obs WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
       await q(`DELETE FROM substituted WHERE station = ${sqlString(id)} AND element = ${sqlString(p.el)}`);
@@ -507,6 +531,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
         source: [
           p.historyNames ? `by_station through ${p.historyLast.replace(/(\d{4})(\d\d)(\d\d)/, "$1-$2-$3")}` : null,
           p.tail.length ? `by_year ${Number((p.historyLast || lo).slice(0, 4))}-${p.y1}` : null,
+          p.tailSkipped || null,
         ].filter(Boolean).join(" + "),
       };
       summaries.push(summary);
@@ -518,7 +543,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     // GHCN-Daily runs a few days behind; fill the newest days from ACIS.
     let provisional = null;
     const wantsRecent = !Number.isFinite(end_year) || end_year >= nowYear;
-    if (wantsRecent && /^(US|RQ|VQ|AQ|GQ|CQ)/.test(id)) {
+    if (fillRecentDays && wantsRecent && /^(US|RQ|VQ|AQ|GQ|CQ)/.test(id)) {
       try {
         provisional = await fillRecent(id, plans.filter((p) => !p.skip).map((p) => p.el));
       } catch (err) {
@@ -627,6 +652,103 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     }
     const dates = rows.map((r) => r.date).sort();
     return { added: rows.length, by_element: by, last_date: lastDate, first_date: dates[0], last_any: dates[dates.length - 1] };
+  }
+
+  // Long records for many stations at once: a list of IDs, or every station in
+  // an area (state, county, place or lat/lon with radius_km) whose record for
+  // each requested element spans at least min_years and overlaps the years
+  // asked for. Each station loads as load_series would (its small per-station
+  // files, plus shared by_year files where those run out), without the ACIS
+  // recent-day fill.
+  const MAX_SERIES_STATIONS = 300;
+  const MAX_SERIES_MB = 800;
+  async function loadSeriesMany({ stations: ids, elements, start_year, end_year, min_years, daily, ...areaArgs } = {}) {
+    const els = (Array.isArray(elements) && elements.length ? elements : ["PRCP"]).map((e) => String(e).toUpperCase());
+    for (const el of els) if (!ELEMENTS[el]) throw new ToolError(`Unknown element ${el}. Use one of ${Object.keys(ELEMENTS).join(", ")}.`);
+    let list = Array.isArray(ids) ? ids.map((x) => String(x).trim().toUpperCase()).filter((x) => STATION_RE.test(x)) : [];
+    let label = `${list.length} listed stations`;
+    if (!list.length) {
+      const area = await resolveArea(areaArgs);
+      if (!area.where.length) throw new ToolError("Give stations (a list of IDs) or an area: state, county with state, country, place with radius_km, or lat/lon with radius_km.");
+      const minY = Number.isFinite(min_years) ? Math.max(0, Math.floor(min_years)) : 0;
+      const yrs = [Number.isFinite(start_year) ? `AND c.last_year >= ${Math.floor(start_year)}` : "", Number.isFinite(end_year) ? `AND c.first_year <= ${Math.floor(end_year)}` : ""].join(" ");
+      list = toRows(await q(`
+        SELECT s.id FROM stations s WHERE ${area.where.join(" AND ")}
+          ${els.map((el) => `AND EXISTS (SELECT 1 FROM coverage c WHERE c.id = s.id AND c.element = ${sqlString(el)} AND c.last_year - c.first_year + 1 >= ${minY} ${yrs})`).join(" ")}
+        ORDER BY s.id`)).map((r) => r.id);
+      label = `${area.label}${minY ? `, ${minY}+ years of ${els.join(" and ")}` : ""}`;
+      if (!list.length) throw new ToolError(`No stations in ${area.label} have ${els.join(" and ")} records matching that.`);
+    }
+    if (list.length > MAX_SERIES_STATIONS) {
+      throw new ToolError(`${list.length} stations match (${label}); the limit is ${MAX_SERIES_STATIONS}. Raise min_years, use a smaller area, or limit the years.`);
+    }
+    const startBytes = stats.bytes;
+    const ok = [];
+    const failed = [];
+    const rows = {};
+    // Many stations' daily rows add up (a century of TMAX and TMIN at 150
+    // stations is over 10 million rows), so beyond 40 stations each one is
+    // reduced to monthly summaries in obs_monthly as it loads, unless daily is set.
+    const keepDaily = daily === true || (daily !== false && list.length <= 40);
+
+    // Download first, several stations at a time (network), then load them
+    // one at a time (the database). Per-station files are small.
+    let fetched = 0;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(6, list.length) }, async () => {
+      while (next < list.length && (stats.bytes - startBytes) / 1e6 <= MAX_SERIES_MB) {
+        const id = list[next++];
+        try {
+          for (const el of els) {
+            const files = await listParquet(`parquet/by_station/STATION=${id}/ELEMENT=${el}/`);
+            await fetchAll(files.map((f) => f.key), 2);
+          }
+        } catch {
+          // the load below reports it
+        }
+        fetched++;
+        onActivity({ kind: "status", text: `Downloading station files: ${fetched} of ${list.length} stations` });
+      }
+    }));
+
+    const elList = els.map(sqlString).join(", ");
+    for (let i = 0; i < list.length; i++) {
+      if ((stats.bytes - startBytes) / 1e6 > MAX_SERIES_MB) {
+        failed.push({ station: "(rest)", reason: `stopped after ${MAX_SERIES_MB} MB; ${list.length - i} stations not loaded` });
+        break;
+      }
+      onActivity({ kind: "status", text: `Loading station ${i + 1} of ${list.length}` });
+      try {
+        const r = await loadSeries({ station: list[i], elements: els, start_year, end_year, recent: false, tail_min_year: new Date().getUTCFullYear() - 1 });
+        const got = r.results.filter((x) => x.loaded);
+        if (got.length) ok.push(list[i]);
+        else failed.push({ station: list[i], reason: r.results.map((x) => x.reason).filter(Boolean).join("; ") || "nothing loaded" });
+        for (const x of got) rows[x.element] = (rows[x.element] || 0) + (x.days || 0);
+        if (!keepDaily) {
+          const sid = sqlString(list[i]);
+          await q(`DELETE FROM obs_monthly WHERE station = ${sid} AND element IN (${elList});
+            INSERT INTO obs_monthly
+              SELECT station, element, year(date), month(date), count(*), avg(value), sum(value), min(value), max(value)
+              FROM obs WHERE station = ${sid} AND element IN (${elList}) GROUP BY ALL;
+            DELETE FROM obs WHERE station = ${sid} AND element IN (${elList});`);
+        }
+      } catch (err) {
+        failed.push({ station: list[i], reason: String(err.message || err).slice(0, 200) });
+      }
+    }
+    onActivity({ kind: "status", text: "" });
+    return {
+      area: label,
+      stations_requested: list.length,
+      stations_loaded: ok.length,
+      days_by_element: rows,
+      failed: failed.slice(0, 15),
+      failed_count: failed.length,
+      downloaded_mb_this_call: Math.round((stats.bytes - startBytes) / 1e5) / 10,
+      table: keepDaily ? "obs(station, element, date, value, m_flag, obs_time)"
+        : "obs_monthly(station, element, year, month, days, mean, total, min, max): one row per station, element and month (daily rows were summarized to save memory; values in obs units)",
+      note: `${keepDaily ? "Each station's daily record is in obs." : "Monthly summaries are in obs_monthly; a month is complete when days is close to its length (e.g., at least 27)."} Stations start and stop at different times: compute per-station statistics first (with a coverage threshold), and for a regional time series average each station's anomaly from its own 1991-2020 mean rather than raw values, reporting how many stations each year uses.`,
+    };
   }
 
   // Days a station has not reported (in GHCN-Daily or ACIS), filled from the
@@ -1065,6 +1187,7 @@ export async function createGhcnd({ onActivity = () => {} } = {}) {
     db,
     findStations,
     searchStationNames,
+    loadSeriesMany,
     fillNeighbors,
     loadSeries,
     loadArea,
